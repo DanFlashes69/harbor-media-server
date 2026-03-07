@@ -1,0 +1,773 @@
+# Harbor Media Server
+
+A fully automated, VPN-protected, self-hosted media server stack running **23 Docker containers** on Windows. Includes movies, TV, music, photos, subtitles, ad blocking, antivirus scanning, automated transcoding, automatic updates, and a dashboard — all behind a VPN kill-switch. Comes with a one-command setup script (`setup.ps1`) that handles directory creation, port conflict detection, configuration generation, and first launch.
+
+---
+
+## Table of Contents
+
+1. [What You Get](#what-you-get)
+2. [Prerequisites](#prerequisites)
+3. [Folder Structure](#folder-structure)
+4. [Installation](#installation)
+5. [Configure the .env File](#configure-the-env-file)
+6. [VPN Setup (Gluetun)](#vpn-setup-gluetun)
+7. [Launch the Stack](#launch-the-stack)
+8. [Service Configuration Guide](#service-configuration-guide)
+   - [Plex](#1-plex)
+   - [qBittorrent](#2-qbittorrent)
+   - [Prowlarr](#3-prowlarr)
+   - [Radarr](#4-radarr)
+   - [Sonarr](#5-sonarr)
+   - [Lidarr](#6-lidarr)
+   - [Overseerr](#7-overseerr)
+   - [Bazarr](#8-bazarr)
+   - [Portainer](#9-portainer)
+   - [Immich](#10-immich)
+   - [Pi-hole](#11-pi-hole)
+   - [Homepage](#12-homepage)
+   - [Recyclarr](#13-recyclarr)
+   - [Unpackerr](#14-unpackerr)
+   - [Tdarr](#15-tdarr-transcoding-optimization)
+9. [Reducing Plex Transcoding](#reducing-plex-transcoding--complete-optimization-guide)
+10. [Remote Access with Tailscale](#remote-access-with-tailscale)
+11. [Security Scanner](#security-scanner)
+12. [Maintenance & Troubleshooting](#maintenance--troubleshooting)
+13. [Updating](#updating)
+14. [Backup Strategy](#backup-strategy)
+15. [Uninstalling](#uninstalling)
+
+---
+
+## What You Get
+
+| Container | Purpose | Port | URL |
+|---|---|---|---|
+| **Gluetun** | VPN tunnel + kill-switch | — | — |
+| **qBittorrent** | Torrent client (VPN-protected) | 8081 | `http://localhost:8081` |
+| **Radarr** | Movie management & automation | 7878 | `http://localhost:7878` |
+| **Sonarr** | TV show management & automation | 8989 | `http://localhost:8989` |
+| **Lidarr** | Music management & automation | 8686 | `http://localhost:8686` |
+| **Bazarr** | Automatic subtitle downloads | 6767 | `http://localhost:6767` |
+| **Prowlarr** | Indexer manager for all *arrs | 9696 | `http://localhost:9696` |
+| **FlareSolverr** | Cloudflare bypass for Prowlarr | 8191 | — |
+| **Plex** | Media streaming server | 32400 | `http://localhost:32400/web` |
+| **Overseerr** | Media request portal | 5055 | `http://localhost:5055` |
+| **Tdarr** | Automated media transcoding | 8265 | `http://localhost:8265` |
+| **Immich Server** | Photo/video management | 2283 | `http://localhost:2283` |
+| **Immich ML** | Machine learning for Immich | — | — |
+| **Immich Redis** | Cache for Immich | — | — |
+| **Immich Postgres** | Database for Immich | — | — |
+| **ClamAV** | Antivirus daemon | — | — |
+| **Scanner** | Custom security scanner | — | — |
+| **Unpackerr** | Extracts archived downloads | — | — |
+| **Watchtower** | Auto-updates all containers | — | — |
+| **Homepage** | Service dashboard | 3000 | `http://localhost:3000` |
+| **Portainer** | Docker management UI | 9000 | `http://localhost:9000` |
+| **Pi-hole** | Network ad blocker & DNS | 8080 | `http://localhost:8080/admin` |
+| **Recyclarr** | TRaSH Guide profile sync | — | — |
+
+---
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+- **Windows 10 or 11** with WSL2 enabled
+- **Docker Desktop** installed and running ([download](https://www.docker.com/products/docker-desktop))
+- **Git for Windows** installed ([download](https://git-scm.com/download/win))
+- **50GB+ free disk space** (more for media storage)
+- **OpenVPN config file** (.ovpn) from your VPN provider
+- **VPN username and password** from your provider's manual setup page
+- Two folder paths ready:
+  - One for Docker configs (fast drive recommended, e.g. `D:\docker`)
+  - One for media/downloads (can be larger/slower drive, e.g. `D:\NAS`)
+
+### Pre-Installation Checklist
+
+Before running the setup script, have these ready:
+
+- [ ] Docker Desktop installed and running
+- [ ] Git installed
+- [ ] .ovpn file downloaded from VPN provider
+- [ ] VPN credentials (username + password)
+- [ ] Chosen paths for DOCKER_ROOT and DATA_ROOT
+- [ ] Timezone identifier (e.g., `America/New_York`) — [find yours here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)
+- [ ] Passwords chosen for Pi-hole and Immich database
+
+---
+
+## Folder Structure
+
+After setup, your directories will look like this:
+```
+DOCKER_ROOT (e.g. D:\docker\)
++-- gluetun/              # VPN config + .ovpn file
++-- qbittorrent/config/   # qBittorrent settings
++-- radarr/config/        # Radarr settings + DB
++-- sonarr/config/        # Sonarr settings + DB
++-- lidarr/config/        # Lidarr settings + DB
++-- bazarr/config/        # Bazarr settings
++-- prowlarr/config/      # Prowlarr settings
++-- plex/config/          # Plex settings + metadata
++-- overseerr/config/     # Overseerr settings
++-- immich/
+¦   +-- model-cache/      # ML model cache
+¦   +-- postgres/         # Immich database
++-- homepage/config/      # Dashboard config files
++-- portainer/data/       # Portainer data
++-- recyclarr/config/     # Quality profile sync config
++-- pihole/
+¦   +-- etc-pihole/       # Pi-hole config
+¦   +-- etc-dnsmasq.d/    # DNS config
++-- scanner/logs/         # Security scanner logs
++-- tdarr/
+¦   +-- server/           # Tdarr server data
+¦   +-- configs/          # Tdarr configuration
+¦   +-- logs/             # Tdarr processing logs
+¦   +-- transcode_cache/  # Temporary transcoding files
++-- .env                  # YOUR credentials (never commit!)
+
+DATA_ROOT (e.g. D:\NAS\)
++-- downloads/            # Active downloads
++-- movies/               # Completed movies
++-- tv/                   # Completed TV shows
++-- music/                # Completed music
++-- photos/               # Immich photo uploads
+```
+
+---
+
+## Installation
+
+### Option A: Automated Setup (Recommended)
+
+1. Clone this repository:
+```powershell
+   git clone https://github.com/DanFlashes69/harbor-media-server.git
+   cd harbor-media-server
+```
+
+2. Run the setup script:
+```powershell
+   .\setup.ps1
+```
+
+   The script will:
+   - Check prerequisites (Docker, Git, Windows version)
+   - Scan all 17 required ports for conflicts
+   - Ask for your DOCKER_ROOT and DATA_ROOT paths
+   - Create all directory structures
+   - Copy configuration files to DOCKER_ROOT
+   - Generate a `.env` file with your credentials
+   - Validate VPN configuration
+   - Check for conflicting native qBittorrent installations
+   - Optionally launch the entire stack
+
+3. Place your VPN `.ovpn` file:
+```powershell
+   Copy-Item "path\to\your\vpn-config.ovpn" "DOCKER_ROOT\gluetun\custom.ovpn"
+```
+
+4. Launch (if you didn't auto-launch):
+```powershell
+   cd DOCKER_ROOT
+   docker compose up -d --build
+```
+
+### Option B: Manual Setup
+
+1. Clone this repository:
+```powershell
+   git clone https://github.com/DanFlashes69/harbor-media-server.git
+   cd harbor-media-server
+```
+
+2. Copy `.env.example` to `.env` and fill in your values:
+```powershell
+   Copy-Item .env.example .env
+   notepad .env
+```
+
+3. Create the directory structure manually (see Folder Structure above).
+
+4. Copy config files to your DOCKER_ROOT:
+```powershell
+   Copy-Item -Recurse homepage\config\* DOCKER_ROOT\homepage\config\
+   Copy-Item -Recurse recyclarr\config\* DOCKER_ROOT\recyclarr\config\
+```
+
+5. Place your `.ovpn` file in `DOCKER_ROOT\gluetun\custom.ovpn`.
+
+6. Copy `docker-compose.yml` to your DOCKER_ROOT and launch:
+```powershell
+   Copy-Item docker-compose.yml DOCKER_ROOT\
+   cd DOCKER_ROOT
+   docker compose up -d --build
+```
+
+---
+
+## Configure the .env File
+
+The `.env` file contains all credentials and paths. **Never commit this file to Git.**
+
+| Variable | Description | Example |
+|---|---|---|
+| `DOCKER_ROOT` | Path to Docker config data | `D:\docker` |
+| `DATA_ROOT` | Path to media and downloads | `D:\NAS` |
+| `TIMEZONE` | Your timezone | `America/New_York` |
+| `VPN_USERNAME` | VPN provider username | *(from provider)* |
+| `VPN_PASSWORD` | VPN provider password | *(from provider)* |
+| `PIHOLE_PASSWORD` | Pi-hole admin password | `your_password` |
+| `IMMICH_DB_PASSWORD` | Immich database password | `strong_random_password` |
+| `RADARR_API_KEY` | Radarr API key (fill after first launch) | *(from Radarr UI)* |
+| `SONARR_API_KEY` | Sonarr API key (fill after first launch) | *(from Sonarr UI)* |
+| `LIDARR_API_KEY` | Lidarr API key (fill after first launch) | *(from Lidarr UI)* |
+
+### Getting API Keys (After First Launch)
+
+1. Open each service's web UI
+2. Go to **Settings ? General**
+3. Copy the **API Key**
+4. Paste it into your `.env` file
+5. Run `docker compose down && docker compose up -d` to apply
+
+---
+
+## VPN Setup (Gluetun)
+
+Gluetun creates a VPN tunnel that qBittorrent is forced through. If the VPN drops, qBittorrent loses all network access (kill-switch).
+
+### Getting Your .ovpn File
+
+| Provider | Instructions |
+|---|---|
+| **ExpressVPN** | Go to [expressvpn.com/setup#manual](https://www.expressvpn.com/setup#manual), select OpenVPN, download a server config |
+| **Mullvad** | Go to [mullvad.net/en/account/openvpn](https://mullvad.net/en/account/openvpn), generate config |
+| **NordVPN** | Go to [nordvpn.com/servers/tools](https://nordvpn.com/servers/tools/), select OpenVPN UDP |
+| **CyberGhost** | Go to account dashboard ? VPN ? Configure Device ? select OpenVPN |
+| **PIA** | Go to [helpdesk.privateinternetaccess.com](https://helpdesk.privateinternetaccess.com/), search "OpenVPN config" |
+
+### Placing the File
+```powershell
+Copy-Item "C:\Users\YOU\Downloads\your_server.ovpn" "DOCKER_ROOT\gluetun\custom.ovpn"
+```
+
+### Verifying VPN is Working
+
+After launching, check that qBittorrent traffic goes through the VPN:
+```powershell
+# Check Gluetun logs for successful connection
+docker logs gluetun 2>&1 | Select-String "healthy"
+
+# Verify qBittorrent's external IP is the VPN's IP (not yours)
+docker exec gluetun wget -qO- https://ipinfo.io/ip
+```
+
+If the IP shown is your VPN server's IP (not your real IP), the kill-switch is working.
+
+### Troubleshooting VPN
+
+| Problem | Solution |
+|---|---|
+| Gluetun won't start | Check `.ovpn` file path: must be at `DOCKER_ROOT\gluetun\custom.ovpn` |
+| Auth failed | Verify VPN_USERNAME and VPN_PASSWORD in `.env` match your provider's **manual setup** credentials (not your account login) |
+| Connection drops | Try a different server `.ovpn` file, or check provider status page |
+| qBittorrent can't connect | Gluetun must be healthy first — check `docker logs gluetun` |
+
+---
+
+## Launch the Stack
+
+### First Launch
+```powershell
+cd DOCKER_ROOT
+
+# Start VPN and DNS first
+docker compose up -d gluetun pihole
+
+# Wait 15 seconds for them to stabilize
+Start-Sleep -Seconds 15
+
+# Start everything else
+docker compose up -d --build
+```
+
+### Checking Status
+```powershell
+docker compose ps          # See all container statuses
+docker compose logs -f     # Live log stream (Ctrl+C to exit)
+docker logs CONTAINER_NAME # Logs for a specific container
+```
+
+### Stopping
+```powershell
+docker compose down        # Stop all containers
+docker compose restart     # Restart all containers
+```
+
+---
+
+## Service Configuration Guide
+
+### 1. Plex
+
+**URL:** `http://localhost:32400/web`
+
+1. Open Plex and sign in with your Plex account
+2. Name your server (e.g., "Harbor Media Server")
+3. Add libraries:
+   - **Movies** ? `/movies`
+   - **TV Shows** ? `/tv`
+   - **Music** ? `/music`
+4. Disable "Allow Fallback to Insecure Connections" under Settings ? Network
+5. Enable "Scan my library automatically" for each library
+
+### 2. qBittorrent
+
+**URL:** `http://localhost:8081`
+
+**Default credentials:** `admin` / check Docker logs for temporary password:
+```powershell
+docker logs qbittorrent 2>&1 | Select-String "password"
+```
+
+**Recommended settings:**
+1. **Downloads ? Default Save Path:** `/downloads`
+2. **Connection ? Peer Port:** `6881` (already mapped through Gluetun)
+3. **BitTorrent:** Enable DHT, PeX, and Local Peer Discovery
+4. **Web UI:** Change the default password immediately
+5. **Advanced ? Network Interface:** Leave blank (Gluetun handles routing)
+
+### 3. Prowlarr
+
+**URL:** `http://localhost:9696`
+
+1. Go to **Settings ? General** and copy your API Key
+2. Add indexers: **Indexers ? Add Indexer** ? search for your preferred indexers
+3. Add download client: **Settings ? Download Clients ? Add ? qBittorrent**
+   - Host: `gluetun` (not localhost — it goes through the VPN container)
+   - Port: `8081`
+   - Username/Password: your qBittorrent credentials
+4. Add applications: **Settings ? Apps ? Add**
+   - Add Radarr: `http://radarr:7878` + Radarr's API key
+   - Add Sonarr: `http://sonarr:8989` + Sonarr's API key
+   - Add Lidarr: `http://lidarr:8686` + Lidarr's API key
+
+### 4. Radarr
+
+**URL:** `http://localhost:7878`
+
+1. **Settings ? General:** Copy your API Key (paste into `.env` as `RADARR_API_KEY`)
+2. **Settings ? Media Management:**
+   - Root Folder: `/movies`
+   - Enable "Rename Movies"
+   - Standard Movie Format: `{Movie Title} ({Release Year})/{Movie Title} ({Release Year}) [{Quality Full}]`
+3. **Settings ? Download Clients ? Add ? qBittorrent:**
+   - Host: `gluetun`, Port: `8081`
+4. **Settings ? Quality:** Customize quality profiles or let Recyclarr handle it
+
+### 5. Sonarr
+
+**URL:** `http://localhost:8989`
+
+1. **Settings ? General:** Copy your API Key (paste into `.env` as `SONARR_API_KEY`)
+2. **Settings ? Media Management:**
+   - Root Folder: `/tv`
+   - Enable "Rename Episodes"
+   - Standard Episode Format: `{Series Title} - S{season:00}E{episode:00} - {Episode Title} [{Quality Full}]`
+3. **Settings ? Download Clients ? Add ? qBittorrent:**
+   - Host: `gluetun`, Port: `8081`
+
+### 6. Lidarr
+
+**URL:** `http://localhost:8686`
+
+1. **Settings ? General:** Copy your API Key (paste into `.env` as `LIDARR_API_KEY`)
+2. **Settings ? Media Management:**
+   - Root Folder: `/music`
+   - Enable "Rename Tracks"
+3. **Settings ? Download Clients ? Add ? qBittorrent:**
+   - Host: `gluetun`, Port: `8081`
+
+### 7. Overseerr
+
+**URL:** `http://localhost:5055`
+
+1. Sign in with your Plex account
+2. Connect to Plex: use `http://plex:32400`
+3. Add Radarr: `http://radarr:7878` + API key + select quality profile + root folder `/movies`
+4. Add Sonarr: `http://sonarr:8989` + API key + select quality profile + root folder `/tv`
+5. Share the URL with family/friends so they can request movies and shows
+
+### 8. Bazarr
+
+**URL:** `http://localhost:6767`
+
+1. **Settings ? Languages:** Add your preferred subtitle languages
+2. **Settings ? Providers:** Enable subtitle providers (OpenSubtitles, Subscene, etc.)
+3. **Settings ? Radarr:** `http://radarr:7878` + API key
+4. **Settings ? Sonarr:** `http://sonarr:8989` + API key
+
+### 9. Portainer
+
+**URL:** `http://localhost:9000`
+
+1. Create an admin account on first visit
+2. Select "Docker" environment (it auto-detects)
+3. Use this UI to monitor containers, view logs, and manage the stack visually
+
+### 10. Immich
+
+**URL:** `http://localhost:2283`
+
+1. Create an admin account on first visit
+2. Upload photos via the web UI or install the Immich mobile app
+3. The mobile app can auto-backup your phone's photos (like Google Photos)
+4. ML-powered facial recognition and search are enabled automatically
+
+### 11. Pi-hole
+
+**URL:** `http://localhost:8080/admin`
+
+**Password:** Whatever you set as `PIHOLE_PASSWORD` in `.env`
+
+1. To use Pi-hole as your DNS, set your PC's DNS to `127.0.0.1`
+2. Or set your router's DNS to your PC's local IP for network-wide ad blocking
+3. Check the dashboard for blocked queries and top domains
+
+### 12. Homepage
+
+**URL:** `http://localhost:3000`
+
+The dashboard is pre-configured with links to all services. To customize:
+- Edit `DOCKER_ROOT\homepage\config\services.yaml` for service links
+- Edit `DOCKER_ROOT\homepage\config\settings.yaml` for theme/layout
+- Edit `DOCKER_ROOT\homepage\config\bookmarks.yaml` for quick links
+- See [Homepage docs](https://gethomepage.dev/) for widgets and integrations
+
+### 13. Recyclarr
+
+Recyclarr automatically syncs TRaSH Guide quality profiles to Radarr and Sonarr. After getting your API keys:
+
+1. Edit `DOCKER_ROOT\recyclarr\config\recyclarr.yml`
+2. Replace `YOUR_RADARR_API_KEY` and `YOUR_SONARR_API_KEY` with real keys
+3. Restart: `docker compose restart recyclarr`
+
+See [TRaSH Guides](https://trash-guides.info/) for recommended quality profiles.
+
+### 14. Unpackerr
+
+Unpackerr automatically extracts archived downloads (.rar, .zip, .7z) so Radarr/Sonarr can import them. It requires API keys in `.env`:
+
+- `SONARR_API_KEY` — from Sonarr Settings ? General
+- `RADARR_API_KEY` — from Radarr Settings ? General
+- `LIDARR_API_KEY` — from Lidarr Settings ? General
+
+After adding keys, restart: `docker compose restart unpackerr`
+
+### 15. Tdarr — Transcoding & Optimization
+
+**URL:** `http://localhost:8265`
+
+Tdarr automatically transcodes your media library into direct-play-friendly formats so Plex never has to transcode on the fly. It processes your entire existing library in the background.
+
+#### Initial Setup
+
+1. Open `http://localhost:8265`
+2. Go to **Libraries** tab
+3. Create three libraries:
+
+**Movies Library:**
+- Name: `Movies`
+- Source: `/media/movies`
+- Transcode Cache: `/temp`
+- Output: `/media/movies`
+
+**TV Library:**
+- Name: `TV`
+- Source: `/media/tv`
+- Transcode Cache: `/temp`
+- Output: `/media/tv`
+
+**Music Library:**
+- Name: `Music`
+- Source: `/media/music`
+- Transcode Cache: `/temp`
+- Output: `/media/music`
+
+#### Source Tab Settings (for each library)
+
+Configure these settings on the Source tab of each library:
+
+**Library Processing:**
+- Process Library: ON
+- Transcodes: ON
+- Health Checks: ON
+
+**Basic:**
+- Scan on Start: ON
+- Hourly Scan: ON
+
+**Folder Watch:**
+- Folder Watch: ON
+- Folder Watch Interval (seconds): 30
+
+**File Scanners:**
+- Use FFprobe: ON
+- Use ExifTool: ON
+- Use MediaInfo: ON
+- Use Closed Captions Detection: OFF (not needed for most setups)
+
+#### Plugin Stack (Classic Plugins)
+
+For each library, go to the **Transcode Options** tab and add these Classic Plugins in this exact order:
+
+1. **Migz-Remove Image Formats in Subs Streams**
+   - Purpose: Strips image-based subtitle formats (PGS/VOBSUB) that cause Plex transcoding
+   - No configuration needed
+
+2. **Migz-Clean Audio Streams**
+   - Purpose: Removes commentary and duplicate audio tracks
+   - No configuration needed
+
+3. **Lmg1-Reorder Streams**
+   - Purpose: Puts the best video/audio/subtitle tracks first
+   - processOrder: `codecs`
+   - videoCodecs: `hevc,h264`
+   - audioCodecs: `eac3,aac,ac3`
+
+4. **Migz-Transcode Using CPU & FFMPEG**
+   - Purpose: The main transcoding plugin — converts to H.264/AAC in MP4 container
+   - Settings:
+     - `container`: `mp4`
+     - `codec`: `h264`
+     - `bitrate_cutoff`: `0` (process all files regardless of bitrate)
+     - `enable_10bit`: `false`
+   - This is the workhorse plugin. It ensures all media is in a format Plex can direct-play on virtually any device.
+
+5. **New File Size Check**
+   - Purpose: Safety check — rejects transcoded files that are larger than originals
+   - No configuration needed
+
+#### Setting Up Workers
+
+1. Go to the main **Tdarr** tab (not Libraries)
+2. Find **InternalNode** in the node list (it should show as "online")
+3. Set:
+   - **Transcode CPU:** 2 (or more if your CPU can handle it)
+   - **Health Check CPU:** 2
+4. Workers will appear and begin processing once you run a scan
+
+#### Running Your First Scan
+
+1. Go to **Libraries** tab
+2. Click on each library
+3. Click **Scan (Fresh)** to queue all existing files
+4. Monitor progress on the main Tdarr tab — you'll see files being processed in the queue
+
+#### GPU Acceleration (Optional)
+
+If you have an NVIDIA GPU, you can add GPU workers for faster transcoding:
+
+1. Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+2. Add to the `tdarr` service in `docker-compose.yml`:
+```yaml
+   deploy:
+     resources:
+       reservations:
+         devices:
+           - capabilities: [gpu]
+```
+3. Restart: `docker compose up -d tdarr`
+4. In Tdarr UI, set Transcode GPU workers on InternalNode
+5. Use `Migz-Transcode Using Nvidia GPU & FFMPEG` plugin instead of the CPU version
+
+---
+
+## Reducing Plex Transcoding — Complete Optimization Guide
+
+Transcoding puts heavy load on your CPU. The goal is to make Plex **direct-play** as much as possible.
+
+### Why Transcoding Happens
+
+| Cause | Solution |
+|---|---|
+| Incompatible video codec (e.g., HEVC on Chromecast) | Tdarr converts everything to H.264 |
+| Incompatible audio (e.g., TrueHD) | Tdarr converts to AAC/EAC3 |
+| Subtitles (PGS/VOBSUB burn-in) | Tdarr strips image-based subs |
+| Bandwidth limit set too low | Plex Settings ? Remote ? set to Maximum |
+| Client quality set to low | On each client: Settings ? Quality ? Maximum |
+
+### Plex Settings to Change
+
+1. **Settings ? Transcoder ? Transcoder Quality:** `Prefer higher speed encoding`
+2. **Settings ? Remote Access ? Remote Streaming:** `Maximum`
+3. **Settings ? Network ? Secure Connections:** `Preferred`
+
+### Per-Client Settings
+
+On every Plex client (TV app, phone, browser):
+1. Go to **Settings ? Video Quality**
+2. Set **Remote Streaming** to `Maximum` or `Original`
+3. Set **Home Streaming** to `Maximum` or `Original`
+
+---
+
+## Remote Access with Tailscale
+
+To access your media server from anywhere without opening router ports:
+
+1. Install [Tailscale](https://tailscale.com/download) on your server and any device you want to access from
+2. Sign in with the same account on all devices
+3. Access services using your Tailscale IP instead of `localhost`
+4. No port forwarding needed — Tailscale creates a secure mesh VPN
+
+---
+
+## Security Scanner
+
+The custom scanner container provides three layers of protection for your downloads:
+
+### Layer 1: Extension Blocking
+Instantly deletes files with dangerous extensions (.exe, .bat, .ps1, .dll, .scr, etc.) — over 40 blocked extensions.
+
+### Layer 2: Media Header Validation
+Checks the "magic bytes" (file headers) of media files to detect disguised executables. For example, a file named `movie.mkv` that's actually an `.exe` will be caught because its binary header won't match the MKV format signature.
+
+### Layer 3: ClamAV Antivirus
+Full virus scanning via the ClamAV daemon. Definitions update automatically.
+
+### How It Works
+
+- Polls the download directory every **30 seconds**
+- Full re-scan of all files every **6 hours**
+- Threats are immediately **deleted** and the associated torrent is removed from qBittorrent
+- All activity is logged to `DOCKER_ROOT\scanner\logs\scan.log`
+
+---
+
+## Maintenance & Troubleshooting
+
+### Common Commands
+```powershell
+# View all container statuses
+docker compose ps
+
+# View live logs for all containers
+docker compose logs -f
+
+# View logs for a specific container
+docker logs radarr
+
+# Restart a single container
+docker compose restart radarr
+
+# Restart everything
+docker compose down && docker compose up -d
+
+# Check disk usage
+docker system df
+```
+
+### Common Issues
+
+| Problem | Solution |
+|---|---|
+| Container won't start | Check logs: `docker logs CONTAINER_NAME` |
+| Port already in use | Find what's using it: `Get-NetTCPConnection -LocalPort PORT` |
+| VPN not connecting | Check Gluetun logs and .ovpn file path |
+| qBittorrent can't download | Verify Gluetun is healthy: `docker logs gluetun` |
+| Plex not finding media | Check volume paths in docker-compose.yml match your DATA_ROOT |
+| Radarr/Sonarr can't connect to qBit | Use `gluetun` as hostname, not `localhost` |
+| Scanner not running | ClamAV takes 2-3 minutes to load definitions on first start |
+| Pi-hole blocking too much | Whitelist domains at `http://localhost:8080/admin` |
+| Immich ML not working | First run downloads ML models (~2GB) — check `docker logs immich-machine-learning` |
+| Tdarr not processing | Check that workers are assigned on InternalNode (Transcode CPU > 0) |
+| Tdarr queue empty | Run "Scan (Fresh)" on each library in the Libraries tab |
+
+---
+
+## Updating
+
+Watchtower automatically updates all containers daily at 4 AM. To manually update:
+```powershell
+cd DOCKER_ROOT
+
+# Pull latest images
+docker compose pull
+
+# Recreate containers with new images
+docker compose up -d
+
+# Clean up old images
+docker image prune -f
+```
+
+To update the Harbor Media Server configuration itself:
+```powershell
+cd harbor-media-server
+git pull origin main
+```
+
+Then copy any changed files to your DOCKER_ROOT.
+
+---
+
+## Backup Strategy
+
+### What to Back Up
+
+| Priority | What | Why |
+|---|---|---|
+| **Critical** | `.env` file | Contains all credentials |
+| **Critical** | `DOCKER_ROOT\*/config/` | All app settings and databases |
+| **Important** | `DOCKER_ROOT\gluetun\custom.ovpn` | VPN configuration |
+| **Optional** | `DATA_ROOT\photos\` | Immich photo library |
+| **Skip** | `DATA_ROOT\downloads\` | Can be re-downloaded |
+| **Skip** | `tdarr\transcode_cache\` | Temporary files |
+
+### Simple Backup Script
+```powershell
+$backupDir = "E:\backups\harbor-$(Get-Date -Format 'yyyy-MM-dd')"
+New-Item -ItemType Directory -Path $backupDir -Force
+
+# Backup configs
+Copy-Item -Recurse "DOCKER_ROOT\*\config" $backupDir\configs\
+Copy-Item "DOCKER_ROOT\.env" $backupDir\
+
+# Backup VPN config
+Copy-Item "DOCKER_ROOT\gluetun\custom.ovpn" $backupDir\
+```
+
+---
+
+## Uninstalling
+
+To completely remove the Harbor Media Server:
+```powershell
+cd DOCKER_ROOT
+
+# Stop and remove all containers, networks, and volumes
+docker compose down -v
+
+# Remove all images used by the stack
+docker compose down --rmi all
+
+# Delete Docker config directory (DESTRUCTIVE)
+Remove-Item -Recurse -Force DOCKER_ROOT
+
+# Optionally delete media (DESTRUCTIVE — your movies/shows/music!)
+# Remove-Item -Recurse -Force DATA_ROOT
+```
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
+
+---
+
+*Built with Docker, secured with VPN kill-switch and antivirus scanning, optimized with Tdarr transcoding.*

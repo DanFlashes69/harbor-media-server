@@ -1,0 +1,62 @@
+---
+- Media:
+    - Plex:
+        icon: plex.svg
+        href: http://localhost:32400/web
+        description: Media streaming server
+    - Radarr:
+        icon: radarr.svg
+        href: http://localhost:7878
+        description: Movie management
+    - Sonarr:
+        icon: sonarr.svg
+        href: http://localhost:8989
+        description: TV show management
+    - Lidarr:
+        icon: lidarr.svg
+        href: http://localhost:8686
+        description: Music management
+
+- Downloads:
+    - qBittorrent:
+        icon: qbittorrent.svg
+        href: http://localhost:8081
+        description: Torrent client (VPN protected)
+    - Prowlarr:
+        icon: prowlarr.svg
+        href: http://localhost:9696
+        description: Indexer manager
+    - Overseerr:
+        icon: overseerr.svg
+        href: http://localhost:5055
+        description: Media requests
+
+- Photos:
+    - Immich:
+        icon: immich.svg
+        href: http://localhost:2283
+        description: Photo & video management
+
+- Optimization:
+    - Tdarr:
+        icon: tdarr.svg
+        href: http://localhost:8265
+        description: Media transcoding
+
+- Management:
+    - Bazarr:
+        icon: bazarr.svg
+        href: http://localhost:6767
+        description: Subtitle downloads
+    - Portainer:
+        icon: portainer.svg
+        href: http://localhost:9000
+        description: Docker management
+    - Pi-hole:
+        icon: pi-hole.svg
+        href: http://localhost:8080/admin
+        description: Network ad blocker
+    - Homepage:
+        icon: homepage.svg
+        href: http://localhost:3000
+        description: This dashboard

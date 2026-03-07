@@ -1,0 +1,18 @@
+---
+title: Harbor Media Server
+theme: dark
+color: slate
+headerStyle: clean
+layout:
+  Media:
+    style: row
+    columns: 4
+  Downloads:
+    style: row
+    columns: 3
+  Photos:
+    style: row
+    columns: 1
+  Management:
+    style: row
+    columns: 4

@@ -1,0 +1,53 @@
+# Never commit credentials
+.env
+*.env
+.env.*
+!.env.example
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# VPN config files (contain server IPs and auth)
+gluetun/*.ovpn
+gluetun/*.crt
+gluetun/*.key
+gluetun/*.pem
+
+# Docker runtime data (generated at runtime, not config)
+*/data/
+*/logs/
+
+# Tdarr runtime data
+tdarr/server/
+tdarr/configs/
+tdarr/logs/
+tdarr/transcode_cache/
+
+# Immich data
+immich/
+
+# Pi-hole data
+pihole/
+
+# Scanner runtime
+scanner/logs/
+
+# App config directories (runtime-generated, not our templates)
+radarr/config/
+sonarr/config/
+lidarr/config/
+bazarr/config/
+prowlarr/config/
+plex/config/
+overseerr/config/
+qbittorrent/config/
+portainer/data/
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

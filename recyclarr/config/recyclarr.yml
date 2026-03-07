@@ -1,0 +1,22 @@
+# Recyclarr Configuration
+# Syncs TRaSH Guide quality profiles to Radarr and Sonarr
+# Docs: https://recyclarr.dev/wiki/
+#
+# IMPORTANT: Update the API keys below after Radarr and Sonarr are running.
+# Find your API key in each app: Settings > General > API Key
+
+radarr:
+  movies:
+    base_url: http://radarr:7878
+    api_key: YOUR_RADARR_API_KEY
+
+    quality_definition:
+      type: movie
+
+sonarr:
+  series:
+    base_url: http://sonarr:8989
+    api_key: YOUR_SONARR_API_KEY
+
+    quality_definition:
+      type: series
