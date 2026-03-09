@@ -1,4 +1,4 @@
----
+﻿---
 title: Harbor Media Server
 theme: dark
 color: slate
@@ -10,9 +10,9 @@ layout:
   Downloads:
     style: row
     columns: 3
-  Photos:
-    style: row
-    columns: 1
-  Management:
+  Photos & Management:
     style: row
     columns: 4
+  Optimization:
+    style: row
+    columns: 1
