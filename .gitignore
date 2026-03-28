@@ -18,6 +18,10 @@ gluetun/*.pem
 # Docker runtime data (generated at runtime, not config)
 */data/
 */logs/
+backups/
+_backup_*/
+retro-scan/
+*.zip
 
 # Tdarr runtime data
 tdarr/server/
@@ -44,6 +48,10 @@ plex/config/
 overseerr/config/
 qbittorrent/config/
 portainer/data/
+
+# Local repo backups / generated task exports
+*.bak
+*.tmp
 
 # Editor files
 *.swp

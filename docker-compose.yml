@@ -1,32 +1,6 @@
-﻿##############################################################################
-#  HARBOR MEDIA SERVER — Docker Compose Stack
-#  23 containers | VPN kill-switch | antivirus scanning | auto-updates
-#
-#  Services:
-#    VPN:        gluetun
-#    Torrent:    qbittorrent (through VPN)
-#    Movies:     radarr
-#    TV:         sonarr
-#    Music:      lidarr
-#    Subtitles:  bazarr
-#    Indexers:   prowlarr, flaresolverr
-#    Streaming:  plex
-#    Requests:   overseerr
-#    Photos:     immich-server, immich-machine-learning, immich-redis, immich-postgres
-#    Security:   clamav, scanner
-#    Transcode:  tdarr
-#    Utilities:  unpackerr, watchtower, homepage, portainer
-#    DNS:        pihole
-#    Config:     recyclarr (runs periodically)
-##############################################################################
 
 services:
 
-  # =========================================================================
-  #  GLUETUN — VPN container (kill-switch for qBittorrent)
-  #  All qBittorrent traffic is forced through this VPN tunnel.
-  #  If the VPN drops, qBittorrent loses ALL network access instantly.
-  # =========================================================================
   gluetun:
     image: qmcgaw/gluetun:latest
     container_name: gluetun
@@ -38,16 +12,22 @@ services:
       - "8081:8081"     # qBittorrent WebUI
       - "6881:6881"     # qBittorrent peer port
       - "6881:6881/udp"
+      - "8001:8000"     # Gluetun control server
     environment:
-      - VPN_SERVICE_PROVIDER=custom
+      - VPN_SERVICE_PROVIDER=protonvpn
       - VPN_TYPE=openvpn
-      - OPENVPN_CUSTOM_CONFIG=/gluetun/custom.ovpn
       - OPENVPN_USER=${VPN_USERNAME}
       - OPENVPN_PASSWORD=${VPN_PASSWORD}
       - FIREWALL_OUTBOUND_SUBNETS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
       - FIREWALL_INPUT_PORTS=8081
+      - SERVER_COUNTRIES=United States
+      - VPN_PORT_FORWARDING=on
+      - HTTP_CONTROL_SERVER_ADDRESS=:8000
     volumes:
       - ${DOCKER_ROOT}/gluetun:/gluetun
+      - gluetun_port:/tmp/gluetun
+    labels:
+      - autoheal=true
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://www.google.com"]
@@ -56,10 +36,6 @@ services:
       retries: 3
       start_period: 30s
 
-  # =========================================================================
-  #  qBITTORRENT — torrent client (all traffic through VPN)
-  #  Access at: http://localhost:8081
-  # =========================================================================
   qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
     container_name: qbittorrent
@@ -75,12 +51,37 @@ services:
     volumes:
       - ${DOCKER_ROOT}/qbittorrent/config:/config
       - ${DATA_ROOT}/downloads:/downloads
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  RADARR — movie management
-  #  Access at: http://localhost:7878
-  # =========================================================================
+  port-updater:
+    build:
+      context: ./port-updater
+    container_name: port-updater
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - QBIT_HOST=127.0.0.1
+      - QBIT_PORT=8081
+      - QBIT_USER=${QBIT_USER}
+      - QBIT_PASS=${QBIT_PASS}
+      - CHECK_INTERVAL=60
+    volumes:
+      - gluetun_port:/tmp/gluetun:ro
+      - ${DOCKER_ROOT}/qbittorrent/config:/qbit-config
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+
   radarr:
     image: lscr.io/linuxserver/radarr:latest
     container_name: radarr
@@ -93,13 +94,17 @@ services:
     volumes:
       - ${DOCKER_ROOT}/radarr/config:/config
       - ${DATA_ROOT}/downloads:/downloads
-      - ${DATA_ROOT}/movies:/movies
+      - ${DATA_ROOT}/media/movies:/movies
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7878/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  SONARR — TV show management
-  #  Access at: http://localhost:8989
-  # =========================================================================
   sonarr:
     image: lscr.io/linuxserver/sonarr:latest
     container_name: sonarr
@@ -112,13 +117,17 @@ services:
     volumes:
       - ${DOCKER_ROOT}/sonarr/config:/config
       - ${DATA_ROOT}/downloads:/downloads
-      - ${DATA_ROOT}/tv:/tv
+      - ${DATA_ROOT}/media/tv:/tv
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8989/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  LIDARR — music management
-  #  Access at: http://localhost:8686
-  # =========================================================================
   lidarr:
     image: lscr.io/linuxserver/lidarr:latest
     container_name: lidarr
@@ -131,13 +140,17 @@ services:
     volumes:
       - ${DOCKER_ROOT}/lidarr/config:/config
       - ${DATA_ROOT}/downloads:/downloads
-      - ${DATA_ROOT}/music:/music
+      - ${DATA_ROOT}/media/music:/music
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8686/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  BAZARR — automatic subtitle downloads
-  #  Access at: http://localhost:6767
-  # =========================================================================
   bazarr:
     image: lscr.io/linuxserver/bazarr:latest
     container_name: bazarr
@@ -149,14 +162,18 @@ services:
       - "6767:6767"
     volumes:
       - ${DOCKER_ROOT}/bazarr/config:/config
-      - ${DATA_ROOT}/movies:/movies
-      - ${DATA_ROOT}/tv:/tv
+      - ${DATA_ROOT}/media/movies:/movies
+      - ${DATA_ROOT}/media/tv:/tv
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:6767 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  PROWLARR — indexer manager (feeds indexers to Radarr/Sonarr/Lidarr)
-  #  Access at: http://localhost:9696
-  # =========================================================================
   prowlarr:
     image: lscr.io/linuxserver/prowlarr:latest
     container_name: prowlarr
@@ -168,11 +185,16 @@ services:
       - "9696:9696"
     volumes:
       - ${DOCKER_ROOT}/prowlarr/config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9696/ping >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  FLARESOLVERR — captcha/cloudflare bypass for Prowlarr
-  # =========================================================================
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
     container_name: flaresolverr
@@ -182,10 +204,6 @@ services:
       - "8191:8191"
     restart: unless-stopped
 
-  # =========================================================================
-  #  PLEX — media streaming server
-  #  Access at: http://localhost:32400/web
-  # =========================================================================
   plex:
     image: lscr.io/linuxserver/plex:latest
     container_name: plex
@@ -194,19 +212,28 @@ services:
       - PGID=1000
       - TZ=${TIMEZONE}
       - VERSION=docker
+      - ADVERTISE_IP=${PLEX_ADVERTISE_IP:-}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+    runtime: nvidia
+    gpus: all
     ports:
       - "32400:32400"
     volumes:
       - ${DOCKER_ROOT}/plex/config:/config
-      - ${DATA_ROOT}/movies:/movies
-      - ${DATA_ROOT}/tv:/tv
-      - ${DATA_ROOT}/music:/music
+      - ${DATA_ROOT}/media:/media
+      - ${DATA_ROOT}/photos:/media/photos
+      - ${DOCKER_ROOT}/plex/transcode:/transcode
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:32400/identity >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  OVERSEERR — media request management
-  #  Access at: http://localhost:5055
-  # =========================================================================
   overseerr:
     image: lscr.io/linuxserver/overseerr:latest
     container_name: overseerr
@@ -218,12 +245,16 @@ services:
       - "5055:5055"
     volumes:
       - ${DOCKER_ROOT}/overseerr/config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5055/api/v1/status >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  IMMICH — photo & video management (Google Photos alternative)
-  #  Access at: http://localhost:2283
-  # =========================================================================
   immich-server:
     image: ghcr.io/immich-app/immich-server:release
     container_name: immich-server
@@ -239,8 +270,12 @@ services:
     volumes:
       - ${DATA_ROOT}/photos:/usr/src/app/upload
     depends_on:
-      - immich-redis
-      - immich-postgres
+      immich-redis:
+        condition: service_healthy
+      immich-postgres:
+        condition: service_healthy
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
   immich-machine-learning:
@@ -279,23 +314,19 @@ services:
       timeout: 5s
       retries: 5
 
-  # =========================================================================
-  #  CLAMAV — antivirus daemon
-  # =========================================================================
   clamav:
     image: clamav/clamav:latest
     container_name: clamav
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "clamdcheck"]
+      test: ["CMD", "clamdscan", "--ping", "3"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 120s
+    labels:
+      - autoheal=true
 
-  # =========================================================================
-  #  SCANNER — custom security scanner sidecar
-  # =========================================================================
   scanner:
     build:
       context: ./scanner
@@ -312,17 +343,15 @@ services:
       - CLAMAV_PORT=3310
       - QBIT_HOST=gluetun
       - QBIT_PORT=8081
-      - QBIT_USER=
-      - QBIT_PASS=
+      - QBIT_USER=${QBIT_USER}
+      - QBIT_PASS=${QBIT_PASS}
       - FULL_SCAN_INTERVAL=21600
     volumes:
       - ${DATA_ROOT}/downloads:/downloads
+      - ${DATA_ROOT}/quarantine:/quarantine
       - ${DOCKER_ROOT}/scanner/logs:/logs
     restart: unless-stopped
 
-  # =========================================================================
-  #  UNPACKERR — extracts archived downloads (.rar, .zip, .7z)
-  # =========================================================================
   unpackerr:
     image: golift/unpackerr:latest
     container_name: unpackerr
@@ -341,9 +370,6 @@ services:
       - ${DATA_ROOT}/downloads:/downloads
     restart: unless-stopped
 
-  # =========================================================================
-  #  WATCHTOWER — automatic Docker image updates
-  # =========================================================================
   watchtower:
     image: containrrr/watchtower:latest
     container_name: watchtower
@@ -357,10 +383,19 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
-  # =========================================================================
-  #  HOMEPAGE — beautiful dashboard for all services
-  #  Access at: http://localhost:3000
-  # =========================================================================
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=30
+      - CURL_TIMEOUT=10
+      - AUTOHEAL_START_PERIOD=300
+      - TZ=${TIMEZONE}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
   homepage:
     image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
@@ -371,12 +406,16 @@ services:
     volumes:
       - ${DOCKER_ROOT}/homepage/config:/app/config
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  PORTAINER — Docker management UI
-  #  Access at: http://localhost:9000
-  # =========================================================================
   portainer:
     image: portainer/portainer-ce:latest
     container_name: portainer
@@ -387,9 +426,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
-  # =========================================================================
-  #  RECYCLARR — syncs TRaSH Guide quality profiles to Radarr/Sonarr
-  # =========================================================================
   recyclarr:
     image: ghcr.io/recyclarr/recyclarr:latest
     container_name: recyclarr
@@ -399,44 +435,51 @@ services:
       - ${DOCKER_ROOT}/recyclarr/config:/config
     restart: unless-stopped
 
-  # =========================================================================
-  #  PI-HOLE — network-wide ad blocker & DNS
-  #  Access at: http://localhost:8080/admin
-  # =========================================================================
   pihole:
     image: pihole/pihole:latest
     container_name: pihole
     environment:
       - TZ=${TIMEZONE}
-      - WEBPASSWORD=${PIHOLE_PASSWORD}
-      - WEB_PORT=8080
+      - FTLCONF_webserver_api_password=${PIHOLE_PASSWORD}
+      - FTLCONF_webserver_session_timeout=31536000
+      - FTLCONF_dns_listeningMode=ALL
     ports:
       - "53:53/tcp"
       - "53:53/udp"
-      - "8080:8080"
+      - "8080:80"       # Pi-hole HTTP
+      - "8443:443"      # Pi-hole HTTPS
     volumes:
       - ${DOCKER_ROOT}/pihole/etc-pihole:/etc/pihole
       - ${DOCKER_ROOT}/pihole/etc-dnsmasq.d:/etc/dnsmasq.d
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/admin/login >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
-  # =========================================================================
-  #  TDARR — automated media transcoding
-  #  Access at: http://localhost:8265
-  # =========================================================================
   tdarr:
     image: ghcr.io/haveagitgat/tdarr:latest
     container_name: tdarr
+    runtime: nvidia
+    gpus: all
     environment:
       - PUID=1000
       - PGID=1000
       - TZ=${TIMEZONE}
       - serverIP=0.0.0.0
       - serverPort=8266
+      - serverURL=http://127.0.0.1:8266
       - webUIPort=8265
       - internalNode=true
       - inContainer=true
       - ffmpegVersion=7
       - nodeName=InternalNode
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
     ports:
       - "8265:8265"
       - "8266:8266"
@@ -444,8 +487,11 @@ services:
       - ${DOCKER_ROOT}/tdarr/server:/app/server
       - ${DOCKER_ROOT}/tdarr/configs:/app/configs
       - ${DOCKER_ROOT}/tdarr/logs:/app/logs
-      - ${DATA_ROOT}/movies:/media/movies
-      - ${DATA_ROOT}/tv:/media/tv
-      - ${DATA_ROOT}/music:/media/music
+      - ${DATA_ROOT}/media/movies:/media/movies
+      - ${DATA_ROOT}/media/tv:/media/tv
+      - ${DATA_ROOT}/media/music:/media/music
       - ${DOCKER_ROOT}/tdarr/transcode_cache:/temp
     restart: unless-stopped
+
+volumes:
+  gluetun_port:
