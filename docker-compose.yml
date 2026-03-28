@@ -79,6 +79,14 @@ services:
       - gluetun_port:/tmp/gluetun:ro
       - ${DOCKER_ROOT}/qbittorrent/config:/qbit-config
       - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/gluetun/forwarded_port && curl -fsS http://127.0.0.1:8081 >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
 
@@ -92,7 +100,7 @@ services:
     ports:
       - "7878:7878"
     volumes:
-      - ${DOCKER_ROOT}/radarr/config:/config
+      - radarr_config:/config
       - ${DATA_ROOT}/downloads:/downloads
       - ${DATA_ROOT}/media/movies:/movies
     healthcheck:
@@ -215,6 +223,7 @@ services:
       - ADVERTISE_IP=${PLEX_ADVERTISE_IP:-}
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
     runtime: nvidia
     gpus: all
     ports:
@@ -224,6 +233,7 @@ services:
       - ${DATA_ROOT}/media:/media
       - ${DATA_ROOT}/photos:/media/photos
       - ${DOCKER_ROOT}/plex/transcode:/transcode
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:32400/identity >/dev/null || exit 1"]
       interval: 30s
@@ -341,15 +351,20 @@ services:
       - LOG_DIR=/logs
       - CLAMAV_HOST=clamav
       - CLAMAV_PORT=3310
-      - QBIT_HOST=gluetun
-      - QBIT_PORT=8081
-      - QBIT_USER=${QBIT_USER}
-      - QBIT_PASS=${QBIT_PASS}
       - FULL_SCAN_INTERVAL=21600
+      - MIN_FILE_AGE_SECONDS=900
+      - ENABLE_MEDIA_HEADER_VALIDATION=false
     volumes:
       - ${DATA_ROOT}/downloads:/downloads
       - ${DATA_ROOT}/quarantine:/quarantine
       - ${DOCKER_ROOT}/scanner/logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z clamav 3310 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
   unpackerr:
@@ -441,12 +456,14 @@ services:
     environment:
       - TZ=${TIMEZONE}
       - FTLCONF_webserver_api_password=${PIHOLE_PASSWORD}
-      - FTLCONF_webserver_session_timeout=31536000
+      - FTLCONF_webserver_session_timeout=7776000
+      - FTLCONF_webserver_api_max_sessions=128
       - FTLCONF_dns_listeningMode=ALL
     ports:
       - "53:53/tcp"
       - "53:53/udp"
       - "8080:80"       # Pi-hole HTTP
+      - "9080:80"       # Pi-hole HTTP alternate web UI port
       - "8443:443"      # Pi-hole HTTPS
     volumes:
       - ${DOCKER_ROOT}/pihole/etc-pihole:/etc/pihole
@@ -480,6 +497,7 @@ services:
       - nodeName=InternalNode
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
     ports:
       - "8265:8265"
       - "8266:8266"
@@ -491,7 +509,35 @@ services:
       - ${DATA_ROOT}/media/tv:/media/tv
       - ${DATA_ROOT}/media/music:/media/music
       - ${DOCKER_ROOT}/tdarr/transcode_cache:/temp
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8265 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - autoheal=true
     restart: unless-stopped
 
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      plex:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
 volumes:
   gluetun_port:
+  radarr_config:
+    external: true

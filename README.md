@@ -8,7 +8,7 @@ The stack is designed around four goals:
 - self-heal common runtime failures
 - keep all public repo files free of credentials and identity-specific values
 
-This repository reflects the current structure of the live stack as of March 27, 2026.
+This repository reflects the current structure of the live stack as of March 28, 2026.
 
 ## What is in the stack
 
@@ -32,9 +32,10 @@ This repository reflects the current structure of the live stack as of March 27,
 | ClamAV | Antivirus daemon | - | Scanner targets this daemon |
 | scanner | Download safety scanner | - | Extension, header, and ClamAV checks |
 | Unpackerr | Archive extraction for Arr | - | Optional but recommended |
-| Tdarr | Library optimization and transcoding | 8265/8266 | CPU-first, GPU path optional/experimental |
+| Tdarr | Library optimization and transcoding | 8265/8266 | CPU and GPU capable when NVENC is available |
 | Homepage | Dashboard | 3000 | Service widgets and links |
-| Pi-hole | DNS ad blocking | 53, 8080, 8443 | Uses Pi-hole v6 env keys |
+| Pi-hole | DNS ad blocking | 53, 8080, 9080, 8443 | Uses Pi-hole v6 env keys and an alternate web UI origin |
+| cloudflared | Cloudflare Tunnel connector | - | Optional public remote access path for Plex |
 | Portainer | Docker UI | 9000 | Optional management UI |
 | Recyclarr | TRaSH sync helper | - | Optional profile sync |
 | Watchtower | Container updates | - | Automatic image updates |
@@ -64,7 +65,6 @@ The live stack is organized around two top-level roots.
 DOCKER_ROOT (example: D:\docker)
 |-- gluetun/
 |-- qbittorrent/config/
-|-- radarr/config/
 |-- sonarr/config/
 |-- lidarr/config/
 |-- bazarr/config/
@@ -85,6 +85,10 @@ DOCKER_ROOT (example: D:\docker)
     |-- configs/
     |-- logs/
     `-- transcode_cache/
+
+Docker named volumes
+|-- gluetun_port
+`-- radarr_config
 
 DATA_ROOT (example: D:\NAS)
 |-- downloads/
@@ -131,6 +135,7 @@ Important values:
 | `PIHOLE_PASSWORD` | Pi-hole web password |
 | `IMMICH_DB_PASSWORD` | Immich Postgres password |
 | `PLEX_ADVERTISE_IP` | Plex LAN advertise URL such as `http://192.168.1.100:32400/` |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Optional Cloudflare Tunnel run token for public Plex remote access |
 | `RADARR_API_KEY` | Optional for Unpackerr/Recyclarr after first launch |
 | `SONARR_API_KEY` | Optional for Unpackerr/Recyclarr after first launch |
 | `LIDARR_API_KEY` | Optional for Unpackerr after first launch |
@@ -278,6 +283,7 @@ The stack includes explicit healthchecks for core services and an `autoheal` con
 This currently covers the core runtime stack such as:
 - `gluetun`
 - `qbittorrent`
+- `port-updater`
 - `radarr`
 - `sonarr`
 - `lidarr`
@@ -289,18 +295,24 @@ This currently covers the core runtime stack such as:
 - `pihole`
 - `immich-server`
 - `clamav`
-
-Tdarr is intentionally not part of the autoheal loop because aggressive health checks caused restart flapping during live troubleshooting.
+- `scanner`
+- `tdarr`
+- `cloudflared`
 
 ### Antivirus and quarantine flow
 
-The `scanner` sidecar watches the downloads tree and checks files using three layers:
+The `scanner` sidecar now runs in a conservative safe mode. It watches the downloads tree and checks files using three layers:
 
 1. dangerous extension blocking
-2. media header validation
-3. ClamAV scanning
+2. optional media header validation
+3. ClamAV scanning after the file is old and stable
 
-If a file fails validation, the scanner can quarantine or remove it and optionally remove the associated qB torrent if qB credentials are configured.
+Important current behavior:
+- suspicious files are quarantined instead of deleted
+- incomplete files and Arr recycle bins are skipped
+- files must be stable before they are scanned
+- ClamAV transport/runtime errors do not mark a file as clean
+- a periodic full-library ClamAV pass is available through `scanner/retro-media-clamscan.sh`
 
 ## Service-specific setup notes
 
@@ -357,15 +369,18 @@ Plex container paths are:
 - transcode temp: `/transcode`
 
 Recommended Plex settings:
-- manual port mapping enabled on `32400`
 - hardware acceleration enabled if NVIDIA runtime is available
 - partial library scans enabled
 - automatic trash emptying disabled
 - transcode temp directory on `/transcode`
 - advertise your LAN URL through `PLEX_ADVERTISE_IP`
 
-For direct remote access without a mesh VPN, you still need router forwarding:
-- `TCP 32400 -> your-server-lan-ip:32400`
+Remote access options supported by this repo:
+- Cloudflare Tunnel via `cloudflared` and `CLOUDFLARE_TUNNEL_TOKEN`
+- direct port forwarding on `32400/TCP` if you prefer classic router-based remote access
+- mesh VPN access such as Tailscale if you want private admin-only remote access
+
+On WSL2/Windows hosts, the compose file mounts `/usr/lib/wsl/lib` into Plex so NVENC/NVDEC are available to the container when the host driver supports them.
 
 ### Overseerr
 
@@ -380,9 +395,12 @@ For direct remote access without a mesh VPN, you still need router forwarding:
 This repo uses Pi-hole v6-style env configuration, including:
 - `FTLCONF_webserver_api_password`
 - `FTLCONF_webserver_session_timeout`
+- `FTLCONF_webserver_api_max_sessions`
 - `FTLCONF_dns_listeningMode`
 
-The current template keeps the Pi-hole session timeout effectively long-lived for convenience.
+The current template keeps Pi-hole sessions long-lived and exposes both:
+- `8080` as the primary web UI port
+- `9080` as an alternate clean web UI origin if a browser gets stuck with stale site data
 
 ### Homepage
 
@@ -392,13 +410,13 @@ The current template keeps the Pi-hole session timeout effectively long-lived fo
 
 ### Tdarr
 
-Current repo configuration enables the NVIDIA runtime and mounts all media roots, but the live stack still treats Tdarr GPU encoding as a work in progress.
+Current repo configuration enables the NVIDIA runtime, mounts all media roots, and includes the WSL NVIDIA library path required for NVENC on supported Windows + WSL2 hosts.
 
 What is safe to assume:
-- Tdarr is useful today for scanning and CPU-based cleanup/transcoding flows
-- Plex hardware transcoding is the higher-confidence GPU path
-- Tdarr NVENC should be treated as optional until you verify it with a real encode test on your own hardware
-- if you want a conservative default, start with CPU workers and validate the output before enabling GPU workers
+- Tdarr is useful today for both library scanning and transcode workflows
+- the live stack has verified NVENC encoding with the bundled compose settings on supported hardware
+- Plex hardware transcoding is also configured and validated separately
+- you should still run a real encode test on your own hardware before assuming GPU throughput will match another host
 
 ## Homepage notes
 
@@ -446,14 +464,14 @@ git pull origin main
 | Arr apps cannot import | Check categories, completed download handling, and root folders |
 | Plex cannot see media | Check that the real files are under `DATA_ROOT\media\...` and mounted to `/media/...` |
 | Homepage widgets fail | Check service URL vs widget URL mismatch and confirm API keys are local-only placeholders, not committed secrets |
-| Pi-hole web UI fails | Confirm Pi-hole v6 env keys and password config |
+| Pi-hole web UI fails | Confirm Pi-hole v6 env keys and password config, then try the alternate `9080` origin before assuming the password is wrong |
 | Overseerr Plex sync fails | Re-link the current Plex machine ID and library IDs after a rebuild |
 | Tdarr GPU jobs fail | Verify NVENC on the host before assuming the container config is enough |
 
 ## Known limitations
 
-- Tdarr GPU encoding should still be treated as optional until you confirm NVENC on your own host.
-- Plex direct remote access still requires router forwarding unless you use a mesh VPN such as Tailscale.
+- Tdarr GPU encoding still depends on the host exposing working NVIDIA libraries into Docker.
+- Plex remote access through Cloudflare Tunnel requires a real public domain in Cloudflare plus a valid tunnel run token.
 - Homepage template files are intentionally placeholdered; real widget keys belong only in your untracked runtime config.
 
 ## Publishing safety
