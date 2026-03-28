@@ -326,7 +326,8 @@ function Show-Summary {
     Write-Host '  1. Put your OpenVPN config at DOCKER_ROOT\gluetun\custom.ovpn'
     Write-Host '  2. Start the stack from the repository root with docker compose up -d --build'
     Write-Host '  3. Finish first-run app setup in qBittorrent, Plex, Prowlarr, Radarr, Sonarr, Lidarr, and Overseerr'
-    Write-Host '  4. Replace placeholder API keys only in local runtime config and .env, never in tracked files'
+    Write-Host '  4. Replace placeholder API keys and widget credentials only in local runtime config and .env, never in tracked files'
+    Write-Host '  5. Review README.md for the current post-install checklist, self-healing features, and backup helper scripts'
 }
 
 Clear-Host

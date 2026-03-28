@@ -162,6 +162,81 @@ DOCKER_ROOT\gluetun\custom.ovpn
 docker compose up -d --build
 ```
 
+## First launch checklist
+
+After the containers are up, use this order so the integrations line up with the current stack.
+
+1. Log into qBittorrent and set your permanent WebUI username/password.
+2. In qBittorrent, set:
+   - save path: `/downloads`
+   - incomplete path: `/downloads/incomplete`
+   - network interface: `tun0`
+   - disable random port on startup
+   - disable UPnP / NAT-PMP
+3. In Prowlarr, add:
+   - qBittorrent download client at `http://gluetun:8081`
+   - Radarr app at `http://radarr:7878`
+   - Sonarr app at `http://sonarr:8989`
+   - Lidarr app at `http://lidarr:8686`
+   - FlareSolverr proxy at `http://flaresolverr:8191`
+4. In Radarr, Sonarr, and Lidarr, add qBittorrent using host `gluetun` and port `8081`.
+5. In Overseerr, connect:
+   - Plex at `http://plex:32400`
+   - Radarr at `http://radarr:7878`
+   - Sonarr at `http://sonarr:8989`
+6. In Plex, create libraries from:
+   - `/media/movies`
+   - `/media/tv`
+   - `/media/music`
+   - `/media/photos`
+
+## Current integration defaults
+
+These are the intended defaults for the public stack today.
+
+### qBittorrent categories
+
+Use category names that match the Arr apps exactly:
+
+- `radarr`
+- `sonarr`
+- `lidarr`
+- optional fallback/manual category for Prowlarr manual grabs
+
+### Arr root folders
+
+- Radarr: `/movies`
+- Sonarr: `/tv`
+- Lidarr: `/music`
+
+### Arr import behavior
+
+Enable these in Radarr and Sonarr:
+
+- Completed Download Handling
+- rename imported files
+- hardlinks instead of copy
+- recycle bin path under `/downloads/.arr-recycle/...`
+
+### Request / quality strategy
+
+The current intended strategy is:
+
+- prefer 1080p
+- allow 720p only as fallback
+- do not default the stack to 4K
+- reject obvious theater releases
+
+The live stack also uses reject terms such as:
+
+- `CAM`
+- `TS`
+- `TC`
+- `HDTS`
+- `HDCAM`
+- `TELESYNC`
+- `TELECINE`
+
 ## What setup.ps1 does
 
 The setup helper now assumes this repository is the Compose project root.
@@ -191,6 +266,11 @@ The `port-updater` service watches Gluetun's forwarded port file and rewrites qB
 
 This protects the stack from a common Proton/Gluetun failure mode where the forwarded port changes but qB keeps listening on the old one.
 
+The updater expects valid qB WebUI credentials in:
+
+- `QBIT_USER`
+- `QBIT_PASS`
+
 ### Autoheal
 
 The stack includes explicit healthchecks for core services and an `autoheal` container that watches services labeled with `autoheal=true`.
@@ -212,6 +292,16 @@ This currently covers the core runtime stack such as:
 
 Tdarr is intentionally not part of the autoheal loop because aggressive health checks caused restart flapping during live troubleshooting.
 
+### Antivirus and quarantine flow
+
+The `scanner` sidecar watches the downloads tree and checks files using three layers:
+
+1. dangerous extension blocking
+2. media header validation
+3. ClamAV scanning
+
+If a file fails validation, the scanner can quarantine or remove it and optionally remove the associated qB torrent if qB credentials are configured.
+
 ## Service-specific setup notes
 
 ### qBittorrent
@@ -223,6 +313,7 @@ Recommended qB settings after first login:
 - disable random port on startup
 - disable UPnP/NAT-PMP
 - use categories that match Arr apps: `radarr`, `sonarr`, `lidarr`
+- use the same username/password in your local `.env` for `QBIT_USER` and `QBIT_PASS`
 
 ### Prowlarr
 
@@ -231,6 +322,7 @@ Recommended qB settings after first login:
 - add FlareSolverr at `http://flaresolverr:8191`
 - tags are optional for FlareSolverr
 - only use tags if you want to scope the proxy to specific indexers
+- leave app sync enabled so indexers propagate from Prowlarr into the Arr apps
 
 ### Radarr and Sonarr
 
@@ -241,6 +333,13 @@ Recommended interoperability settings:
 - hardlinks instead of copy: enabled
 - rename imports: enabled
 - recycle bins configured under `/downloads/.arr-recycle/...`
+
+Recommended release preference scoring:
+
+- Remux preferred over everything else
+- BluRay preferred over WEB
+- WEB-DL preferred over WEBRip
+- HEVC preferred when available and device support is acceptable
 
 Quality strategy used in the live stack:
 - 1080p first
@@ -262,6 +361,8 @@ Recommended Plex settings:
 - hardware acceleration enabled if NVIDIA runtime is available
 - partial library scans enabled
 - automatic trash emptying disabled
+- transcode temp directory on `/transcode`
+- advertise your LAN URL through `PLEX_ADVERTISE_IP`
 
 For direct remote access without a mesh VPN, you still need router forwarding:
 - `TCP 32400 -> your-server-lan-ip:32400`
@@ -272,6 +373,7 @@ For direct remote access without a mesh VPN, you still need router forwarding:
 - connect to Radarr at `http://radarr:7878`
 - connect to Sonarr at `http://sonarr:8989`
 - default the movie/TV request profile to your 720p/1080p profile if you want 1080p-first with 720p fallback
+- re-link Plex in Overseerr after a rebuild if the Plex machine ID changes
 
 ### Pi-hole
 
@@ -282,6 +384,12 @@ This repo uses Pi-hole v6-style env configuration, including:
 
 The current template keeps the Pi-hole session timeout effectively long-lived for convenience.
 
+### Homepage
+
+- keep widget keys and passwords out of Git
+- use placeholders in tracked files only
+- if you want tiles to work from devices other than the server itself, replace `localhost` hrefs with your server LAN IP or DNS name in the copied runtime config under `DOCKER_ROOT`
+
 ### Tdarr
 
 Current repo configuration enables the NVIDIA runtime and mounts all media roots, but the live stack still treats Tdarr GPU encoding as a work in progress.
@@ -290,6 +398,7 @@ What is safe to assume:
 - Tdarr is useful today for scanning and CPU-based cleanup/transcoding flows
 - Plex hardware transcoding is the higher-confidence GPU path
 - Tdarr NVENC should be treated as optional until you verify it with a real encode test on your own hardware
+- if you want a conservative default, start with CPU workers and validate the output before enabling GPU workers
 
 ## Homepage notes
 
@@ -307,6 +416,12 @@ This repo now includes backup helpers under `scripts/`.
 - you can schedule it with Windows Task Scheduler
 
 The live stack uses a multi-run daily schedule rather than a single overnight run.
+
+The provided task helper registers these run times:
+
+- `5:00 PM`
+- `1:00 AM`
+- `9:00 AM`
 
 ## Updating
 
@@ -334,6 +449,12 @@ git pull origin main
 | Pi-hole web UI fails | Confirm Pi-hole v6 env keys and password config |
 | Overseerr Plex sync fails | Re-link the current Plex machine ID and library IDs after a rebuild |
 | Tdarr GPU jobs fail | Verify NVENC on the host before assuming the container config is enough |
+
+## Known limitations
+
+- Tdarr GPU encoding should still be treated as optional until you confirm NVENC on your own host.
+- Plex direct remote access still requires router forwarding unless you use a mesh VPN such as Tailscale.
+- Homepage template files are intentionally placeholdered; real widget keys belong only in your untracked runtime config.
 
 ## Publishing safety
 
