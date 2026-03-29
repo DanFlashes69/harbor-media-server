@@ -1,14 +1,25 @@
 ﻿# Harbor Media Server
 
-A Windows-first, Docker Compose media stack for movies, TV, music, photos, subtitles, requests, ad blocking, AV scanning, transcoding, and dashboarding.
+A Windows-first Docker media platform that turns a single machine into a private streaming service, request portal, download pipeline, photo library, and media dashboard. Overseerr handles requests. Prowlarr searches indexers. Radarr, Sonarr, and Lidarr manage movies, TV, and music. qBittorrent downloads everything behind Gluetun's VPN kill-switch. Bazarr handles subtitles. Plex serves the finished library. Immich manages personal photos and videos. Pi-hole provides DNS filtering. Tdarr supports media optimization. Homepage ties the stack together, while ClamAV, the scanner, autoheal, and the download orchestrator add safety, recovery, and operational resilience.
 
-The stack is designed around four goals:
-- keep torrent traffic pinned behind a VPN kill-switch
-- keep the Arr/Plex stack interoperating cleanly
-- self-heal common runtime failures
-- keep all public repo files free of credentials and identity-specific values
+In practice, Harbor is built to feel less like a pile of separate containers and more like a private media cloud. You request content, it downloads safely through the VPN, it gets organized into the right library, failed grabs can be retried or repaired, and the finished result is ready to stream through Plex. At the same time, the stack also covers photos, subtitles, dashboarding, DNS filtering, remote access, health monitoring, and self-healing.
 
-This repository reflects the current structure of the live stack as of March 28, 2026.
+This repository reflects the current structure of the live Harbor stack as of March 28, 2026.
+
+## Why Harbor
+
+| Capability | Typical media server | Harbor Media Server |
+|---|---|---|
+| Streaming | Usually just playback | Plex streaming plus request, download, organization, repair, and remote access layers |
+| Requests | Often manual or missing | Overseerr request flow tied directly into the automation pipeline |
+| Downloads | Often unmanaged or exposed directly | qBittorrent isolated behind Gluetun with VPN kill-switch and forwarded-port syncing |
+| Library automation | Often partial or fragmented | Radarr, Sonarr, Lidarr, Prowlarr, and Bazarr work as one coordinated pipeline |
+| Photos and personal media | Usually handled elsewhere | Immich is part of the same platform |
+| Safety | Minimal checks beyond app defaults | ClamAV, quarantine-first scanning, guarded orchestration, and healthchecks |
+| Recovery | Manual queue babysitting | Orchestrated queue shaping, salvage, retry, and bounded repair logic |
+| Remote access | Often simple port forwarding | Cloudflare Tunnel support for Plex plus optional private admin access patterns |
+| Visibility | Multiple disconnected UIs | Homepage dashboard plus healthchecks, autoheal, and runtime state reporting |
+| Overall experience | Separate apps to manage | One self-hosted platform to request, download, organize, stream, store, and monitor |
 
 ## What is in the stack
 
@@ -560,16 +571,3 @@ git pull origin main
 - Tdarr GPU encoding still depends on the host exposing working NVIDIA libraries into Docker.
 - Plex remote access through Cloudflare Tunnel requires a real public domain in Cloudflare plus a valid tunnel run token.
 - Homepage template files are intentionally placeholdered; real widget keys belong only in your untracked runtime config.
-
-## Publishing safety
-
-This repository is intended to stay free of:
-- credentials
-- API keys
-- tokens
-- local email addresses
-- router credentials
-- public IPs or tailnet IPs
-- user-specific LAN identities beyond generic placeholders
-
-Keep secrets only in untracked runtime config and `.env`.
