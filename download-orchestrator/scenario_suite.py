@@ -364,12 +364,13 @@ class OrchestratorScenarioTests(unittest.TestCase):
             state="forcedDL",
             progress=0.5,
             amount_left=5 * 1024**3,
-            dlspeed=200_000,
+            dlspeed=400_000,
             num_seeds=3,
             availability=3.0,
         )
         reserved["force_start"] = True
         stall = {torrent["hash"]: {"stalledSeconds": 0, "longStalled": False} for torrent in candidates}
+        reserved_torrents = orch.reserved_active_downloads([reserved], {})
         metrics = orch.collect_workload_metrics(candidates, stall)
         desired_total = orch.target_active_downloads(
             "constrained",
@@ -378,8 +379,57 @@ class OrchestratorScenarioTests(unittest.TestCase):
             stall,
             metrics,
         )
-        desired = orch.managed_active_download_budget(desired_total, 1, len(candidates))
+        desired = orch.managed_active_download_budget(desired_total, len(reserved_torrents), len(candidates))
+        self.assertEqual(len(reserved_torrents), 1)
         self.assertEqual(desired_total, 2)
+        self.assertEqual(desired, 1)
+
+    def test_weak_force_started_download_does_not_consume_reserved_slot(self) -> None:
+        candidates = [
+            make_torrent(
+                "managed1",
+                "Managed One",
+                state="queuedDL",
+                progress=0.85,
+                amount_left=2 * 1024**3,
+                num_seeds=4,
+                availability=2.5,
+            ),
+            make_torrent(
+                "managed2",
+                "Managed Two",
+                state="queuedDL",
+                progress=0.55,
+                amount_left=4 * 1024**3,
+                num_seeds=3,
+                availability=2.2,
+            ),
+        ]
+        weak_forced = make_torrent(
+            "forced",
+            "Weak Forced",
+            state="forcedDL",
+            progress=0.9,
+            amount_left=8 * 1024**3,
+            dlspeed=2_000,
+            num_seeds=2,
+            availability=1.8,
+        )
+        weak_forced["force_start"] = True
+        stall = {torrent["hash"]: {"stalledSeconds": 0, "longStalled": False} for torrent in candidates}
+        reserved = orch.reserved_active_downloads([weak_forced], {})
+        weak_reserved = orch.weak_reserved_active_downloads([weak_forced], {})
+        metrics = orch.collect_workload_metrics(candidates, stall)
+        desired_total = orch.target_active_downloads(
+            "constrained",
+            candidates,
+            int(30 * 1024**3),
+            stall,
+            metrics,
+        )
+        desired = orch.managed_active_download_budget(desired_total, len(reserved), len(candidates), len(weak_reserved))
+        self.assertEqual(reserved, [])
+        self.assertEqual(len(weak_reserved), 1)
         self.assertEqual(desired, 1)
 
     def test_choose_allowed_never_exceeds_budget_after_first_pick(self) -> None:

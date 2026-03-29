@@ -1,6 +1,6 @@
 ﻿# Harbor Media Server
 
-A Windows-first Docker media platform that turns a single machine into a private streaming service, request portal, download pipeline, photo library, and media dashboard. Overseerr handles requests. Prowlarr searches indexers. Radarr, Sonarr, and Lidarr manage movies, TV, and music. qBittorrent downloads everything behind Gluetun's VPN kill-switch. Bazarr handles subtitles. Plex serves the finished library. Immich manages personal photos and videos. Pi-hole provides DNS filtering. Tdarr supports media optimization. Homepage ties the stack together, while ClamAV, the scanner, autoheal, and the download orchestrator add safety, recovery, and operational resilience.
+A Windows-first Docker media platform that turns a single machine into a private streaming service, request portal, download pipeline, photo library, and media dashboard. Overseerr handles requests. Prowlarr searches indexers. Radarr, Sonarr, and Lidarr manage movies, TV, and music. qBittorrent handles torrent downloads behind Gluetun's VPN kill-switch, and SABnzbd adds an optional Usenet path without replacing the torrent workflow. Bazarr handles subtitles. Plex serves the finished library. Immich manages personal photos and videos. Pi-hole provides DNS filtering. Tdarr supports media optimization. Homepage ties the stack together, while ClamAV, the scanner, autoheal, and the download orchestrator add safety, recovery, and operational resilience.
 
 In practice, Harbor is built to feel less like a pile of separate containers and more like a private media cloud. You request content, it downloads safely through the VPN, it gets organized into the right library, failed grabs can be retried or repaired, and the finished result is ready to stream through Plex. At the same time, the stack also covers photos, subtitles, dashboarding, DNS filtering, remote access, health monitoring, and self-healing.
 
@@ -12,7 +12,7 @@ This repository reflects the current structure of the live Harbor stack as of Ma
 |---|---|---|
 | Streaming | Usually just playback | Plex streaming plus request, download, organization, repair, and remote access layers |
 | Requests | Often manual or missing | Overseerr request flow tied directly into the automation pipeline |
-| Downloads | Often unmanaged or exposed directly | qBittorrent isolated behind Gluetun with VPN kill-switch and forwarded-port syncing |
+| Downloads | Often unmanaged or exposed directly | qBittorrent behind Gluetun for torrents plus an optional SABnzbd Usenet path |
 | Library automation | Often partial or fragmented | Radarr, Sonarr, Lidarr, Prowlarr, and Bazarr work as one coordinated pipeline |
 | Photos and personal media | Usually handled elsewhere | Immich is part of the same platform |
 | Safety | Minimal checks beyond app defaults | ClamAV, quarantine-first scanning, guarded orchestration, and healthchecks |
@@ -27,7 +27,9 @@ This repository reflects the current structure of the live Harbor stack as of Ma
 |---|---|---:|---|
 | Gluetun | VPN tunnel and kill-switch | - | qBittorrent lives behind this namespace |
 | qBittorrent | Torrent client | 8081 | Routed through Gluetun |
+| SABnzbd | Usenet client | 8082 | Optional secondary downloader behind Gluetun |
 | port-updater | Syncs qB listen port to Gluetun forwarded port | - | Self-heals Proton port changes |
+| gluetun-namespace-guard | Restarts shared-namespace download services after a Gluetun restart | - | Prevents qB and SAB from being marooned after VPN namespace changes |
 | Radarr | Movie automation | 7878 | Uses `/movies` |
 | Sonarr | TV automation | 8989 | Uses `/tv` |
 | Lidarr | Music automation | 8686 | Uses `/music` |
@@ -61,6 +63,7 @@ repo-root/
 |-- .env.example
 |-- docker-compose.yml
 |-- download-orchestrator/
+|-- gluetun-namespace-guard/
 |-- setup.ps1
 |-- scanner/
 |-- port-updater/
@@ -77,6 +80,7 @@ The live stack is organized around two top-level roots.
 DOCKER_ROOT (example: D:\docker)
 |-- gluetun/
 |-- qbittorrent/config/
+|-- sabnzbd/config/
 |-- sonarr/config/
 |-- lidarr/config/
 |-- bazarr/config/
@@ -109,6 +113,9 @@ Docker named volumes
 DATA_ROOT (example: D:\NAS)
 |-- downloads/
 |   `-- incomplete/
+|   `-- usenet/
+|       |-- complete/
+|       `-- incomplete/
 |-- quarantine/
 |-- photos/
 `-- media/
@@ -123,6 +130,7 @@ DATA_ROOT (example: D:\NAS)
 - Docker Desktop running with Linux containers
 - Git for Windows
 - A VPN provider that supports OpenVPN credentials and port forwarding if you want the qB port-updater flow
+- A Usenet provider account plus at least one NZB indexer if you want SABnzbd to download real jobs
 - An NVIDIA GPU if you want Plex hardware transcoding or future Tdarr GPU work
 - Two storage locations:
   - `DOCKER_ROOT` for configs and app state
@@ -202,18 +210,24 @@ After the containers are up, use this order so the integrations line up with the
    - network interface: `tun0`
    - disable random port on startup
    - disable UPnP / NAT-PMP
-3. In Prowlarr, add:
+3. In SABnzbd, set:
+   - incomplete folder: `/downloads/usenet/incomplete`
+   - complete folder: `/downloads/usenet/complete`
+   - leave it idle until you have a Usenet provider and at least one NZB indexer
+4. In Prowlarr, add:
    - qBittorrent download client at `http://gluetun:8081`
    - Radarr app at `http://radarr:7878`
    - Sonarr app at `http://sonarr:8989`
    - Lidarr app at `http://lidarr:8686`
    - FlareSolverr proxy at `http://flaresolverr:8191`
-4. In Radarr, Sonarr, and Lidarr, add qBittorrent using host `gluetun` and port `8081`.
-5. In Overseerr, connect:
+   - optional NZB indexers later if you want SABnzbd to be used for Usenet
+5. In Radarr, Sonarr, and Lidarr, add qBittorrent using host `gluetun` and port `8081`.
+6. If you want Usenet in the same apps, add SABnzbd using host `gluetun` and port `8080`.
+7. In Overseerr, connect:
    - Plex at `http://plex:32400`
    - Radarr at `http://radarr:7878`
    - Sonarr at `http://sonarr:8989`
-6. In Plex, create libraries from:
+8. In Plex, create libraries from:
    - `/media/movies`
    - `/media/tv`
    - `/media/music`
@@ -285,10 +299,23 @@ It will:
 ### qBittorrent behind Gluetun
 
 - `qbittorrent` uses `network_mode: "service:gluetun"`
+- `sabnzbd` also uses `network_mode: "service:gluetun"`
 - qB traffic is forced through the Gluetun namespace
+- SABnzbd shares the same protected namespace without changing qB's listen port or queue logic
 - the Gluetun firewall acts as the kill-switch layer
 - qB is expected to bind to `tun0` inside qB settings
 - qB should not rely on UPnP or a random listen port
+
+### Gluetun namespace recovery
+
+The stack now includes a `gluetun-namespace-guard` sidecar that watches the Gluetun container and restarts the containers that share its network namespace when Gluetun itself restarts.
+
+That guard currently protects:
+- `qbittorrent`
+- `port-updater`
+- `sabnzbd`
+
+This exists because a raw Gluetun restart can recreate the VPN namespace and leave shared-namespace containers alive but no longer reachable from the host, even when their internal healthchecks still look healthy.
 
 ### Port-forward self-healing
 
@@ -425,6 +452,33 @@ Recommended qB settings after first login:
 - use categories that match Arr apps: `radarr`, `sonarr`, `lidarr`
 - use the same username/password in your local `.env` for `QBIT_USER` and `QBIT_PASS`
 
+### SABnzbd
+
+Recommended SABnzbd baseline:
+- host UI on `http://localhost:8082`
+- internal service URL `http://gluetun:8080`
+- incomplete folder: `/downloads/usenet/incomplete`
+- complete folder: `/downloads/usenet/complete`
+- keep Usenet categories aligned with the Arr apps: `radarr`, `sonarr`, `lidarr`
+- keep SAB additive to the torrent pipeline rather than replacing qB
+
+What SABnzbd adds to Harbor:
+- a second download path when a release exists on Usenet but not as a healthy torrent
+- fewer dead-swarm and tracker-dependence problems for supported content
+- a clean separation between torrent downloads and Usenet downloads under `/downloads`
+- staged Servarr integration so Radarr, Sonarr, Lidarr, and Prowlarr already know where SAB lives
+
+What SABnzbd does not do by itself:
+- it does not make torrents faster
+- it still needs a real Usenet provider account
+- it still needs at least one working NZB indexer before Arr apps can send it useful work
+
+Current live integration behavior:
+- SABnzbd is reachable on `http://localhost:8082`
+- Radarr, Sonarr, Lidarr, and Prowlarr can reach SAB at `http://gluetun:8080`
+- SAB categories are pre-created for `radarr`, `sonarr`, `lidarr`, `manual`, and `prowlarr`
+- the Servarr and Prowlarr SAB clients are staged as disabled secondary clients until you add real Usenet servers and NZB indexers
+
 ### Prowlarr
 
 - add qBittorrent as an explicit download client
@@ -559,6 +613,7 @@ git pull origin main
 | Problem | Check |
 |---|---|
 | qB cannot download | Check `gluetun` health and forwarded port sync |
+| SABnzbd is up but idle | Check that you added a real Usenet provider and at least one NZB indexer; SAB alone does not create downloads |
 | Arr apps cannot import | Check categories, completed download handling, and root folders |
 | Plex cannot see media | Check that the real files are under `DATA_ROOT\media\...` and mounted to `/media/...` |
 | Homepage widgets fail | Check service URL vs widget URL mismatch and confirm API keys are local-only placeholders, not committed secrets |

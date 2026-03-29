@@ -25,6 +25,7 @@ $RequiredPorts = [ordered]@{
     7878  = 'Radarr'
     8080  = 'Pi-hole HTTP'
     8081  = 'qBittorrent WebUI'
+    8082  = 'SABnzbd WebUI'
     8191  = 'FlareSolverr'
     8265  = 'Tdarr WebUI'
     8266  = 'Tdarr server'
@@ -38,6 +39,7 @@ $RequiredPorts = [ordered]@{
 $DockerDirectories = @(
     'gluetun',
     'qbittorrent\config',
+    'sabnzbd\config',
     'radarr\config',
     'sonarr\config',
     'lidarr\config',
@@ -63,6 +65,8 @@ $DockerDirectories = @(
 $DataDirectories = @(
     'downloads',
     'downloads\incomplete',
+    'downloads\usenet\incomplete',
+    'downloads\usenet\complete',
     'downloads\.arr-recycle\radarr',
     'downloads\.arr-recycle\sonarr',
     'media\movies',

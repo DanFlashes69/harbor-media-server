@@ -68,6 +68,7 @@ class Config:
     completion_priority_progress: float = env_float("COMPLETION_PRIORITY_PROGRESS", 0.8)
     completion_priority_remaining_gb: float = env_float("COMPLETION_PRIORITY_REMAINING_GB", 8)
     stall_failover_seconds: int = env_int("STALL_FAILOVER_SECONDS", 900)
+    force_started_reserve_min_speed_bps: int = env_int("FORCE_STARTED_RESERVE_MIN_SPEED_BPS", 262144)
     manage_force_started: bool = env_bool("MANAGE_FORCE_STARTED", False)
     arr_history_lookback_hours: int = env_int("ARR_HISTORY_LOOKBACK_HOURS", 168)
     retro_repair_lookback_hours: int = env_int("RETRO_REPAIR_LOOKBACK_HOURS", 720)
@@ -828,8 +829,15 @@ def target_active_downloads(
     return min(desired, viable_count)
 
 
-def managed_active_download_budget(total_active_target: int, reserved_active_count: int, viable_count: int) -> int:
-    managed_budget = max(0, total_active_target - max(0, reserved_active_count))
+def managed_active_download_budget(
+    total_active_target: int,
+    reserved_active_count: int,
+    viable_count: int,
+    weak_reserved_count: int = 0,
+) -> int:
+    managed_budget = max(0, total_active_target - max(0, reserved_active_count) - max(0, weak_reserved_count))
+    if weak_reserved_count > 0 and reserved_active_count == 0 and viable_count > 0:
+        managed_budget = max(1, managed_budget)
     return min(managed_budget, viable_count)
 
 
@@ -880,11 +888,53 @@ def collect_workload_metrics(candidates: list[dict[str, Any]], stall_metadata: d
     }
 
 
-def reserved_active_downloads(torrents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def should_reserve_active_download(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    state = str(torrent.get("state") or "")
+    if state not in {"downloading", "forcedDL"}:
+        return False
+    if is_manageable(torrent):
+        return False
+    if not bool(torrent.get("force_start", False)):
+        return True
+    if bool(stall_meta.get("longStalled")):
+        return False
+    return download_speed(torrent) >= CONFIG.force_started_reserve_min_speed_bps
+
+
+def is_weak_reserved_active_download(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    state = str(torrent.get("state") or "")
+    if state not in {"downloading", "forcedDL"}:
+        return False
+    if is_manageable(torrent):
+        return False
+    return not should_reserve_active_download(torrent, stall_meta)
+
+
+def reserved_active_downloads(
+    torrents: list[dict[str, Any]],
+    stall_metadata: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
     return [
         torrent
         for torrent in torrents
-        if not is_manageable(torrent) and str(torrent.get("state") or "") in {"downloading", "forcedDL"}
+        if should_reserve_active_download(
+            torrent,
+            stall_metadata.get(torrent["hash"], {"stalledSeconds": 0, "longStalled": False}),
+        )
+    ]
+
+
+def weak_reserved_active_downloads(
+    torrents: list[dict[str, Any]],
+    stall_metadata: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        torrent
+        for torrent in torrents
+        if is_weak_reserved_active_download(
+            torrent,
+            stall_metadata.get(torrent["hash"], {"stalledSeconds": 0, "longStalled": False}),
+        )
     ]
 
 
@@ -2061,8 +2111,9 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
     protected_ok, protected_meta = protected_settings_guard(store, prefs, categories)
 
     candidates = [torrent for torrent in torrents if is_manageable(torrent)]
-    reserved_downloaders = reserved_active_downloads(torrents)
     stall_metadata = {torrent["hash"]: update_stall_state(store, torrent) for torrent in candidates}
+    reserved_downloaders = reserved_active_downloads(torrents, stall_metadata)
+    weak_reserved_downloaders = weak_reserved_active_downloads(torrents, stall_metadata)
     workload_metrics = collect_workload_metrics(candidates, stall_metadata)
     viable_count = len(candidates)
     mode = compute_mode(free_bytes, viable_count)
@@ -2082,6 +2133,7 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         desired_active_downloads_total,
         len(reserved_downloaders),
         viable_count,
+        len(weak_reserved_downloaders),
     )
     allowed = choose_allowed(candidates, mode, free_bytes, stall_metadata, desired_active_downloads) if action_guard_ok else []
     allowed_hashes = {torrent["hash"] for torrent in allowed}
@@ -2169,6 +2221,7 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
             "desiredActiveDownloads": desired_active_downloads_total,
             "desiredManagedDownloads": desired_active_downloads,
             "reservedActiveDownloads": len(reserved_downloaders),
+            "weakReservedActiveDownloads": len(weak_reserved_downloaders),
             "prefUpdates": pref_updates,
             "prefDiff": pref_diff,
         },

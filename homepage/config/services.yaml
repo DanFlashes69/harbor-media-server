@@ -43,6 +43,10 @@
           url: http://gluetun:8081
           username: admin
           password: your-qbittorrent-password
+    - SABnzbd:
+        icon: sabnzbd.svg
+        href: http://localhost:8082
+        description: Usenet client (VPN protected)
     - Prowlarr:
         icon: prowlarr.svg
         href: http://localhost:9696

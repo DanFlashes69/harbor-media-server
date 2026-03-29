@@ -10,6 +10,7 @@ services:
       - /dev/net/tun:/dev/net/tun
     ports:
       - "8081:8081"     # qBittorrent WebUI
+      - "8082:8080"     # SABnzbd WebUI
       - "6881:6881"     # qBittorrent peer port
       - "6881:6881/udp"
       - "8001:8000"     # Gluetun control server
@@ -19,7 +20,7 @@ services:
       - OPENVPN_USER=${VPN_USERNAME}
       - OPENVPN_PASSWORD=${VPN_PASSWORD}
       - FIREWALL_OUTBOUND_SUBNETS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
-      - FIREWALL_INPUT_PORTS=8081
+      - FIREWALL_INPUT_PORTS=8081,8080
       - SERVER_COUNTRIES=United States
       - VPN_PORT_FORWARDING=on
       - HTTP_CONTROL_SERVER_ADDRESS=:8000
@@ -85,6 +86,54 @@ services:
       timeout: 10s
       retries: 5
       start_period: 45s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  sabnzbd:
+    image: lscr.io/linuxserver/sabnzbd:latest
+    container_name: sabnzbd
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/sabnzbd/config:/config
+      - ${DATA_ROOT}/downloads:/downloads
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  gluetun-namespace-guard:
+    build:
+      context: ./gluetun-namespace-guard
+    container_name: gluetun-namespace-guard
+    depends_on:
+      gluetun:
+        condition: service_started
+    environment:
+      - WATCH_CONTAINER=gluetun
+      - DEPENDENT_CONTAINERS=qbittorrent,port-updater,sabnzbd
+      - POLL_INTERVAL_SECONDS=10
+      - HEALTH_WAIT_SECONDS=120
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/heartbeat && find /tmp/heartbeat -mmin -3 | grep -q heartbeat"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     labels:
       - autoheal=true
     restart: unless-stopped
