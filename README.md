@@ -6,7 +6,7 @@ In practice, Harbor is built to feel less like a pile of separate containers and
 
 This repository reflects the current structure of the live Harbor stack as of March 28, 2026.
 
-## Why Harbor
+## Why Harbor Media Server
 
 | Capability | Typical media server | Harbor Media Server |
 |---|---|---|
