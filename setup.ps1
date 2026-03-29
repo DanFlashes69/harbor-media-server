@@ -41,6 +41,7 @@ $RequiredPorts = [ordered]@{
 
 $DockerDirectories = @(
     'gluetun',
+    'indexer-guardian',
     'qbittorrent\config',
     'sabnzbd\config',
     'radarr\config',

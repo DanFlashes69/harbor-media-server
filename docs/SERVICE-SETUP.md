@@ -20,6 +20,7 @@ Use this alongside [SETUP.md](SETUP.md) when you want the full "what does this s
 | Service | What it does | What Harbor configures automatically | What you still provide or confirm |
 |---|---|---|---|
 | Prowlarr | Central indexer manager | qB and SAB download clients, Radarr/Sonarr/Lidarr app links, FlareSolverr proxy, starter public torrent pack, optional primary Newznab bootstrap from `.env` | Private trackers, authenticated indexers, NZB indexers, any provider-specific tuning |
+| Indexer Guardian | Keeps Harbor-managed public indexers healthy | Container, state directory, managed-slot monitoring, repeated-failure replacement logic, stale Arr indexer cleanup | Any public-indexer strategy changes outside the Harbor-managed pack, plus all private/authenticated trackers |
 | FlareSolverr | Proxy for Cloudflare-protected indexers | Container and Prowlarr proxy object | Nothing unless you want a different tagging strategy |
 | Overseerr | User request portal | Container and network path | First admin onboarding, Plex authentication, request defaults |
 | Radarr | Movie automation | Root folder, qB client, staged-disabled SAB client, named-volume storage | Any movie-quality/profile decisions beyond the included defaults |
@@ -108,6 +109,7 @@ After `setup.ps1`, `docker compose up -d --build`, and `scripts/bootstrap-media-
 - Radarr, Sonarr, and Lidarr linked to qBittorrent and staged for SABnzbd
 - Prowlarr linked to the Arr apps, qBittorrent, SABnzbd, and FlareSolverr
 - a starter public torrent indexer pack in Prowlarr unless you skipped it
+- that starter public pack managed by the Indexer Guardian, so broken Harbor-managed public indexers can be replaced automatically without touching private trackers
 - Homepage runtime links and key widgets
 - the safe-update status page reachable on `http://localhost:8099`
 - Recyclarr runtime keys filled in

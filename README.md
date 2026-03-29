@@ -1,6 +1,6 @@
 ﻿# Harbor Media Server
 
-A Windows-first Docker media platform that turns a single machine into a private streaming service, request portal, download pipeline, photo library, and media dashboard. Overseerr handles requests. Prowlarr searches indexers. Radarr, Sonarr, and Lidarr manage movies, TV, and music. qBittorrent handles torrent downloads behind Gluetun's VPN kill-switch, and SABnzbd adds an optional Usenet path without replacing the torrent workflow. Bazarr handles subtitles. Plex serves the finished library. Immich manages personal photos and videos. Pi-hole provides DNS filtering. Tdarr supports media optimization. Homepage ties the stack together, while ClamAV, the scanner, autoheal, and the download orchestrator add safety, recovery, and operational resilience.
+A Windows-first Docker media platform that turns a single machine into a private streaming service, request portal, download pipeline, photo library, and media dashboard. Overseerr handles requests. Prowlarr searches indexers. Radarr, Sonarr, and Lidarr manage movies, TV, and music. qBittorrent handles torrent downloads behind Gluetun's VPN kill-switch, and SABnzbd adds an optional Usenet path without replacing the torrent workflow. Bazarr handles subtitles. Plex serves the finished library. Immich manages personal photos and videos. Pi-hole provides DNS filtering. Tdarr supports media optimization. Homepage ties the stack together, while ClamAV, the scanner, autoheal, the download orchestrator, and the Indexer Guardian add safety, recovery, and operational resilience.
 
 In practice, Harbor is built to feel less like a pile of separate containers and more like a private media cloud. You request content, it downloads safely through the VPN, it gets organized into the right library, failed grabs can be retried or repaired, and the finished result is ready to stream through Plex. At the same time, the stack also covers photos, subtitles, dashboarding, DNS filtering, remote access, health monitoring, and self-healing.
 
@@ -36,6 +36,7 @@ This repository reflects the current structure of the live Harbor stack as of Ma
 | Lidarr | Music automation | 8686 | Uses `/music` |
 | Bazarr | Subtitle automation | 6767 | Connected to Radarr/Sonarr |
 | Prowlarr | Indexer management | 9696 | Syncs indexers to Arr apps |
+| Indexer Guardian | Managed public-indexer replacement and cleanup | - | Keeps Harbor-managed Prowlarr slots healthy and prunes stale Arr-side copies |
 | FlareSolverr | Proxy for Cloudflare-protected indexers | 8191 | Optional per-indexer via tags |
 | Plex | Media server | 32400 | GPU-enabled container configuration |
 | Overseerr | Request portal | 5055 | Connected to Plex/Radarr/Sonarr |
@@ -66,6 +67,7 @@ repo-root/
 |-- docker-compose.yml
 |-- docs/
 |-- download-orchestrator/
+|-- indexer-guardian/
 |-- gluetun-namespace-guard/
 |-- setup.ps1
 |-- scanner/
@@ -94,6 +96,7 @@ DOCKER_ROOT (example: D:\docker)
 |-- immich/model-cache/
 |-- immich/postgres/
 |-- homepage/config/
+|-- indexer-guardian/
 |-- portainer/data/
 |-- recyclarr/config/
 |-- pihole/etc-pihole/
@@ -540,6 +543,18 @@ Current live integration behavior:
 - tags are optional for FlareSolverr
 - only use tags if you want to scope the proxy to specific indexers
 - leave app sync enabled so indexers propagate from Prowlarr into the Arr apps
+- Harbor seeds a managed public torrent pack by default:
+  - `1337x`
+  - `EZTV`
+  - `Nyaa.si`
+  - `TorrentDownload`
+  - `TorrentProject2`
+  - `YTS`
+- the Indexer Guardian watches only those Harbor-managed public slots
+- replacements happen only after repeated real proxy failures, not on stale warning noise alone
+- replacement candidates are validated before the old managed slot is removed
+- priority, profile, tags, and downstream sync shape are preserved as closely as possible
+- stale Prowlarr-fed Arr indexers are cleaned up automatically when a managed slot changes
 
 ### Radarr and Sonarr
 

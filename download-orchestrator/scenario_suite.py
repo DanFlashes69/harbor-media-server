@@ -285,7 +285,6 @@ class OrchestratorScenarioTests(unittest.TestCase):
         prefs = {
             key: {
                 "current_network_interface": "tun0",
-                "listen_port": 58947,
                 "save_path": "/downloads",
                 "temp_path": "/downloads/incomplete",
                 "temp_path_enabled": True,
@@ -320,6 +319,71 @@ class OrchestratorScenarioTests(unittest.TestCase):
         ok, details = orch.protected_settings_guard(store, prefs, drift_categories)
         self.assertFalse(ok)
         self.assertIn("radarr", details["categoryPathDrift"])
+
+    def test_protected_settings_guard_ignores_forwarded_port_rotation(self) -> None:
+        store = FakeStore()
+        baseline_prefs = {
+            key: {
+                "current_network_interface": "tun0",
+                "save_path": "/downloads",
+                "temp_path": "/downloads/incomplete",
+                "temp_path_enabled": True,
+                "queueing_enabled": True,
+                "proxy_type": "None",
+                "proxy_ip": "",
+                "proxy_port": 8080,
+                "proxy_hostname_lookup": False,
+                "proxy_bittorrent": True,
+                "proxy_misc": True,
+                "proxy_rss": True,
+                "web_ui_port": 8081,
+                "web_ui_username": "user",
+                "web_ui_address": "*",
+                "use_https": False,
+                "upnp": False,
+            }[key]
+            for key in orch.PROTECTED_QBIT_PREF_KEYS
+        }
+        categories = {
+            "radarr": {"savePath": "/downloads/radarr"},
+            "sonarr": {"savePath": "/downloads/sonarr"},
+            "lidarr": {"savePath": "/downloads/lidarr"},
+        }
+        ok, _ = orch.protected_settings_guard(store, baseline_prefs, categories)
+        self.assertTrue(ok)
+
+        rotated_port_prefs = dict(baseline_prefs)
+        rotated_port_prefs["listen_port"] = 36367
+        ok, details = orch.protected_settings_guard(store, rotated_port_prefs, categories)
+        self.assertTrue(ok)
+        self.assertEqual(details["prefDrift"], {})
+
+    def test_protected_settings_guard_prunes_legacy_baseline_keys(self) -> None:
+        store = FakeStore()
+        store.runtime["protected_qbit_pref_baseline"] = {
+            "current_network_interface": "tun0",
+            "listen_port": 58947,
+            "save_path": "/downloads",
+            "temp_path": "/downloads/incomplete",
+            "temp_path_enabled": True,
+            "queueing_enabled": True,
+        }
+        prefs = {
+            "current_network_interface": "tun0",
+            "save_path": "/downloads",
+            "temp_path": "/downloads/incomplete",
+            "temp_path_enabled": True,
+            "queueing_enabled": True,
+        }
+        categories = {
+            "radarr": {"savePath": "/downloads/radarr"},
+            "sonarr": {"savePath": "/downloads/sonarr"},
+            "lidarr": {"savePath": "/downloads/lidarr"},
+        }
+        ok, details = orch.protected_settings_guard(store, prefs, categories)
+        self.assertTrue(ok)
+        self.assertNotIn("listen_port", store.runtime["protected_qbit_pref_baseline"])
+        self.assertEqual(details["prefDrift"], {})
 
     def test_action_plan_stops_downloader_overage_before_backlog(self) -> None:
         candidates = [
@@ -443,6 +507,35 @@ class OrchestratorScenarioTests(unittest.TestCase):
         allowed = orch.choose_allowed(candidates, "constrained", int(30 * 1024**3), stall, 3)
         total_remaining = sum(t["amount_left"] for t in allowed[1:])
         self.assertLessEqual(total_remaining, int((30 - orch.CONFIG.reserved_free_gb) * 1024**3))
+
+    def test_constrained_selection_prefers_viable_seeded_swarm_over_zero_seed_probe(self) -> None:
+        candidates = [
+            make_torrent(
+                "probe",
+                "Probe",
+                state="stoppedDL",
+                dlspeed=0,
+                progress=0.05,
+                amount_left=1 * 1024**3,
+                num_seeds=0,
+                availability=0.04,
+                category="sonarr",
+            ),
+            make_torrent(
+                "seeded",
+                "Seeded",
+                state="stalledDL",
+                dlspeed=0,
+                progress=0.01,
+                amount_left=350 * 1024**2,
+                num_seeds=1,
+                availability=1.01,
+                category="lidarr",
+            ),
+        ]
+        stall = {torrent["hash"]: {"stalledSeconds": 0, "longStalled": False} for torrent in candidates}
+        allowed = orch.choose_allowed(candidates, "constrained", int(25 * 1024**3), stall, 1)
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["seeded"])
 
     def test_broken_download_recovery_does_not_fire_when_gate_off(self) -> None:
         original_allow_arr = orch.CONFIG.allow_arr_commands

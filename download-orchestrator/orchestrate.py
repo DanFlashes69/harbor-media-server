@@ -153,7 +153,6 @@ ADVISORY_QBIT_PREF_KEYS = (
 
 PROTECTED_QBIT_PREF_KEYS = (
     "current_network_interface",
-    "listen_port",
     "save_path",
     "temp_path",
     "temp_path_enabled",
@@ -694,6 +693,10 @@ def protected_settings_guard(
     prefs: dict[str, Any],
     categories: dict[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
+    # The qB listen port is intentionally dynamic because it follows the
+    # Gluetun-forwarded port. tunnel_guard() already verifies that live
+    # relationship, so protected baselines should focus on settings that are
+    # expected to stay static across normal Harbor operation.
     pref_values = {key: prefs.get(key) for key in PROTECTED_QBIT_PREF_KEYS if key in prefs}
     category_values = {
         name: categories.get(name, {}).get("savePath")
@@ -709,11 +712,31 @@ def protected_settings_guard(
         store.runtime["protected_qbit_pref_baseline"] = pref_values
         pref_baseline = pref_values
         seeded = True
+    else:
+        normalized_pref_baseline = {
+            key: value
+            for key, value in pref_baseline.items()
+            if key in PROTECTED_QBIT_PREF_KEYS
+        }
+        if normalized_pref_baseline != pref_baseline:
+            store.runtime["protected_qbit_pref_baseline"] = normalized_pref_baseline
+            pref_baseline = normalized_pref_baseline
+            seeded = True
 
     if CONFIG.refresh_protected_baselines or category_baseline is None:
         store.runtime["protected_qbit_category_baseline"] = category_values
         category_baseline = category_values
         seeded = True
+    else:
+        normalized_category_baseline = {
+            key: value
+            for key, value in category_baseline.items()
+            if key in EXPECTED_CATEGORY_PATHS
+        }
+        if normalized_category_baseline != category_baseline:
+            store.runtime["protected_qbit_category_baseline"] = normalized_category_baseline
+            category_baseline = normalized_category_baseline
+            seeded = True
 
     pref_drift = {}
     for key, baseline_value in pref_baseline.items():
@@ -950,6 +973,7 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
     long_stalled = bool(stall_meta["longStalled"])
     state = str(torrent.get("state") or "")
     completion_priority = is_completion_priority(torrent)
+    healthy_swarm = is_swarm_healthy(torrent, stall_meta)
 
     viability_bucket = 0
     if is_missing_files_state(torrent):
@@ -958,8 +982,10 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
         viability_bucket = 3
     elif long_stalled:
         viability_bucket = 2
-    elif seeds <= 0 and availability <= 0 and not currently_moving:
+    elif not healthy_swarm and not currently_moving:
         viability_bucket = 1
+    elif seeds <= 0 and availability <= 0 and not currently_moving:
+        viability_bucket = 2
 
     if mode in {"emergency", "constrained", "focused"}:
         return (

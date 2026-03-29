@@ -10,7 +10,7 @@ The setup flow is designed to get a new machine as close as possible to the curr
 - create the named Docker volumes used by the SQLite-heavy services
 - generate `.env`
 - launch the stack from the repository root
-- wire qBittorrent, SABnzbd, Radarr, Sonarr, Lidarr, Prowlarr, Recyclarr, and Homepage together
+- wire qBittorrent, SABnzbd, Radarr, Sonarr, Lidarr, Prowlarr, the Indexer Guardian, Recyclarr, and Homepage together
 - leave only account-linked or browser-only tasks for the operator or an autonomous browser agent
 
 If you want the version tailored for autonomous agents, see [AI-SETUP.md](AI-SETUP.md).
@@ -73,6 +73,7 @@ It currently:
 - adds a FlareSolverr proxy in Prowlarr
 - adds a primary Newznab indexer automatically if you provide `PROWLARR_NEWZNAB_*` values in `.env`
 - seeds a curated public torrent indexer pack in Prowlarr unless you skip it
+- seeds that public pack as Harbor-managed slots so the Indexer Guardian can replace broken public indexers automatically
 - updates the runtime Recyclarr config with the real Radarr and Sonarr API keys
 - generates a working runtime Homepage services file using the current host, API keys, and passwords the stack can safely discover
 - adds the safe-update status page link to Homepage
@@ -85,6 +86,7 @@ It currently:
 | qBittorrent | Folders, env placeholders | Login, WebUI credentials, safe defaults, categories, `tun0` binding, runtime config patch | None if bootstrap succeeds |
 | SABnzbd | Folders, env placeholders | Runtime config, paths, categories, staged Arr and Prowlarr integration | Add a real Usenet provider and at least one NZB indexer if you want real Usenet jobs |
 | Prowlarr | Container launch | App links, download clients, FlareSolverr proxy, default public torrent indexers | Private trackers, authenticated indexers, any provider-specific tuning |
+| Indexer Guardian | State directory and container launch | Monitors Harbor-managed public Prowlarr slots, replaces broken public indexers with validated alternatives, and cleans stale Arr-side copies | Private trackers and any indexers you do not want Harbor to manage |
 | Radarr | Container launch, named volume | qB and SAB clients, root folder | Quality/profile tuning beyond the included baseline |
 | Sonarr | Container launch, named volume | qB and SAB clients, root folder | Anime strategy, quality/profile tuning beyond the included baseline |
 | Lidarr | Container launch, named volume | qB and SAB clients, root folder | Music-specific profile strategy |
@@ -137,6 +139,7 @@ These pieces either require your personal accounts or are safer to confirm in a 
 - Usenet provider details and premium NZB indexers
 - token-only Homepage widgets
 - any custom quality-profile or release-profile tuning beyond the included defaults
+- any public-indexer strategy changes beyond the default Harbor-managed pack
 
 ## Optional bootstrap switches
 

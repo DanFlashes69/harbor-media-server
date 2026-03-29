@@ -348,7 +348,7 @@ function Ensure-ProwlarrIndexerProxy {
         [string]$Implementation,
         [bool]$Enabled,
         [hashtable]$FieldValues,
-        [int[]]$Tags,
+        [object[]]$Tags,
         [string]$BaseUrl,
         [string]$ApiKey
     )
@@ -367,7 +367,7 @@ function Ensure-ProwlarrIndexerProxy {
 
     $payload = $template | Get-JsonClone
     $payload.name = $Name
-    $payload.tags = @($Tags)
+    $payload.tags = @($Tags | ForEach-Object { [int]$_ } | Select-Object -Unique)
 
     foreach ($field in $payload.fields) {
         if ($FieldValues.ContainsKey($field.name)) {
@@ -385,7 +385,7 @@ function Ensure-ProwlarrIndexer {
         [int]$Priority,
         [bool]$Enabled,
         [int]$AppProfileId,
-        [int[]]$Tags,
+        [object[]]$Tags,
         [hashtable]$FieldOverrides,
         [string]$BaseUrl,
         [string]$ApiKey
@@ -407,7 +407,7 @@ function Ensure-ProwlarrIndexer {
     $payload.enable = $Enabled
     $payload.priority = $Priority
     $payload.appProfileId = $AppProfileId
-    $payload.tags = @($Tags)
+    $payload.tags = @($Tags | ForEach-Object { [int]$_ } | Select-Object -Unique)
 
     foreach ($field in $payload.fields) {
         if ($FieldOverrides.ContainsKey($field.name)) {
@@ -426,7 +426,7 @@ function Ensure-ProwlarrNamedIndexer {
         [int]$Priority,
         [bool]$Enabled,
         [int]$AppProfileId,
-        [int[]]$Tags,
+        [object[]]$Tags,
         [hashtable]$FieldOverrides,
         [string]$BaseUrl,
         [string]$ApiKey
@@ -449,7 +449,7 @@ function Ensure-ProwlarrNamedIndexer {
     $payload.enable = $Enabled
     $payload.priority = $Priority
     $payload.appProfileId = $AppProfileId
-    $payload.tags = @($Tags)
+    $payload.tags = @($Tags | ForEach-Object { [int]$_ } | Select-Object -Unique)
 
     foreach ($field in $payload.fields) {
         if ($FieldOverrides.ContainsKey($field.name)) {
@@ -872,6 +872,7 @@ function Configure-Servarr {
     }
 
     $flaresolverrTagId = Ensure-ProwlarrTag -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -Label 'flaresolverr'
+    $managedIndexerTagId = Ensure-ProwlarrTag -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -Label 'harbor-managed-indexer'
 
     Ensure-ProwlarrApplication -Name 'Radarr' -Implementation 'Radarr' -Enabled $true -SyncLevel 'fullSync' -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -FieldValues @{
         prowlarrUrl = 'http://prowlarr:9696'
@@ -941,12 +942,12 @@ function Configure-Servarr {
 
     if (-not $SkipProwlarrIndexers) {
         $indexers = @(
-            @{ Definition = '1337x';        Priority = 10; Tags = @($flaresolverrTagId); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5; 'downloadlink' = 0; 'downloadlink2' = 1; 'sort' = 2; 'type' = 1 } },
-            @{ Definition = 'eztv';         Priority = 15; Tags = @($flaresolverrTagId); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5 } },
-            @{ Definition = 'limetorrents'; Priority = 20; Tags = @(); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5; 'downloadlink' = 1; 'downloadlink2' = 0; 'sort' = 0 } },
-            @{ Definition = 'nyaasi';       Priority = 25; Tags = @(); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5; 'prefer_magnet_links' = $true } },
-            @{ Definition = 'thepiratebay'; Priority = 35; Tags = @(); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5; 'apiurl' = 'apibay.org' } },
-            @{ Definition = 'yts';          Priority = 40; Tags = @(); Fields = @{ 'apiurl' = 'movies-api.accel.li' } }
+            @{ Definition = '1337x';        Priority = 10; Tags = @($flaresolverrTagId, $managedIndexerTagId); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5; 'downloadlink' = 0; 'downloadlink2' = 1; 'sort' = 2; 'type' = 1 } },
+            @{ Definition = 'eztv';         Priority = 15; Tags = @($flaresolverrTagId, $managedIndexerTagId); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5 } },
+            @{ Definition = 'torrentdownload'; Priority = 20; Tags = @($managedIndexerTagId); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5 } },
+            @{ Definition = 'nyaasi';       Priority = 25; Tags = @($managedIndexerTagId); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5; 'prefer_magnet_links' = $true } },
+            @{ Definition = 'torrentproject2'; Priority = 35; Tags = @($managedIndexerTagId); Fields = @{ 'torrentBaseSettings.appMinimumSeeders' = 5 } },
+            @{ Definition = 'yts';          Priority = 40; Tags = @($managedIndexerTagId); Fields = @{ 'apiurl' = 'movies-api.accel.li' } }
         )
 
         foreach ($indexer in $indexers) {
