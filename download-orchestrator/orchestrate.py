@@ -67,6 +67,9 @@ class Config:
     healthy_availability_floor: float = env_float("HEALTHY_AVAILABILITY_FLOOR", 1.1)
     completion_priority_progress: float = env_float("COMPLETION_PRIORITY_PROGRESS", 0.8)
     completion_priority_remaining_gb: float = env_float("COMPLETION_PRIORITY_REMAINING_GB", 8)
+    probe_rotation_seconds: int = env_int("PROBE_ROTATION_SECONDS", 120)
+    probe_quarantine_seconds: int = env_int("PROBE_QUARANTINE_SECONDS", 900)
+    stall_probe_seconds: int = env_int("STALL_PROBE_SECONDS", 240)
     stall_failover_seconds: int = env_int("STALL_FAILOVER_SECONDS", 900)
     force_started_reserve_min_speed_bps: int = env_int("FORCE_STARTED_RESERVE_MIN_SPEED_BPS", 262144)
     manage_force_started: bool = env_bool("MANAGE_FORCE_STARTED", False)
@@ -86,9 +89,12 @@ class Config:
     max_qbit_recovery_actions_per_cycle: int = env_int("MAX_QBIT_RECOVERY_ACTIONS_PER_CYCLE", 1)
     min_qbit_recovery_interval_seconds: int = env_int("MIN_QBIT_RECOVERY_INTERVAL_SECONDS", 7200)
     max_qbit_recovery_attempts_per_hash: int = env_int("MAX_QBIT_RECOVERY_ATTEMPTS_PER_HASH", 2)
+    min_qbit_stall_recovery_interval_seconds: int = env_int("MIN_QBIT_STALL_RECOVERY_INTERVAL_SECONDS", 900)
+    max_qbit_stall_recovery_attempts_per_hash: int = env_int("MAX_QBIT_STALL_RECOVERY_ATTEMPTS_PER_HASH", 4)
     control_stability_cycles: int = env_int("CONTROL_STABILITY_CYCLES", 2)
     pref_stability_cycles: int = env_int("PREF_STABILITY_CYCLES", 2)
     min_torrent_action_interval_seconds: int = env_int("MIN_TORRENT_ACTION_INTERVAL_SECONDS", 300)
+    min_rotation_action_interval_seconds: int = env_int("MIN_ROTATION_ACTION_INTERVAL_SECONDS", 60)
     min_pref_write_interval_seconds: int = env_int("MIN_PREF_WRITE_INTERVAL_SECONDS", 900)
     max_torrent_actions_per_cycle: int = env_int("MAX_TORRENT_ACTIONS_PER_CYCLE", 8)
     qbit_write_allowlist: tuple[str, ...] = tuple(
@@ -242,7 +248,14 @@ def stat_free_bytes(path: str) -> int:
 class StateStore:
     def __init__(self) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        self.runtime = self._load_json(RUNTIME_STATE_PATH, {"stalled_since": {}, "last_decisions": {}})
+        self.runtime = self._load_json(
+            RUNTIME_STATE_PATH,
+            {
+                "stalled_since": {},
+                "last_decisions": {},
+                "probe_quarantine_until": {},
+            },
+        )
 
     @staticmethod
     def _load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -468,23 +481,26 @@ class ArrHistoryCollector:
             if not meta or not api_key:
                 continue
 
-            records: list[dict[str, Any]] = []
-            page = 1
-            while True:
-                url = (
-                    f"{meta['base_url']}/wanted/missing?page={page}&pageSize=200"
-                    f"&sortDirection=descending&sortKey=monitored&apikey={api_key}"
-                )
-                payload = self._fetch_json(url)
-                page_records = payload.get("records", [])
-                if not page_records:
-                    break
-                records.extend(page_records)
-                if page >= payload.get("totalPages", page):
-                    break
-                page += 1
+            try:
+                records: list[dict[str, Any]] = []
+                page = 1
+                while True:
+                    url = (
+                        f"{meta['base_url']}/wanted/missing?page={page}&pageSize=200"
+                        f"&sortDirection=descending&sortKey=monitored&apikey={api_key}"
+                    )
+                    payload = self._fetch_json(url)
+                    page_records = payload.get("records", [])
+                    if not page_records:
+                        break
+                    records.extend(page_records)
+                    if page >= payload.get("totalPages", page):
+                        break
+                    page += 1
 
-            snapshots[app_name] = records
+                snapshots[app_name] = records
+            except Exception as exc:
+                log(f"wanted/missing fetch failed for {app_name}: {exc}")
 
         return snapshots
 
@@ -604,6 +620,34 @@ def is_missing_files_state(torrent: dict[str, Any]) -> bool:
     return str(torrent.get("state") or "") == "missingFiles"
 
 
+def positive_timestamp(*values: Any) -> int:
+    for value in values:
+        try:
+            parsed = int(value or 0)
+        except (TypeError, ValueError):
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return 0
+
+
+def recovery_reference_ts(torrent: dict[str, Any]) -> int:
+    timestamps = []
+    for key in ("completion_on", "seen_complete", "last_activity", "added_on"):
+        value = positive_timestamp(torrent.get(key))
+        if value > 0:
+            timestamps.append(value)
+    return max(timestamps) if timestamps else 0
+
+
+def broken_swarm_should_salvage(torrent: dict[str, Any]) -> bool:
+    return download_speed(torrent) > 0 or seed_count(torrent) > 0 or availability_value(torrent) > 0
+
+
+def is_stalled_recovery_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    return str(torrent.get("state") or "") == "stalledDL" and bool(stall_meta.get("probeStalled"))
+
+
 def is_completion_priority(torrent: dict[str, Any]) -> bool:
     remaining_gb = gb_from_bytes(remaining_bytes(torrent))
     return progress_value(torrent) >= CONFIG.completion_priority_progress or remaining_gb <= CONFIG.completion_priority_remaining_gb
@@ -614,6 +658,8 @@ def is_swarm_healthy(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> boo
         return False
     if download_speed(torrent) > 0:
         return True
+    if stall_meta.get("probeStalled"):
+        return False
     if stall_meta.get("longStalled"):
         return False
     return seed_count(torrent) > 0 or availability_value(torrent) >= CONFIG.healthy_availability_floor
@@ -631,6 +677,50 @@ def is_dead_swarm(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     return seed_count(torrent) <= 0 and availability_value(torrent) <= 0
 
 
+def is_probe_rotation_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if bool(torrent.get("force_start")) and not CONFIG.manage_force_started:
+        return False
+    if not is_active_download_state(str(torrent.get("state") or "")):
+        return False
+    if remaining_bytes(torrent) <= 0 or download_speed(torrent) > 0:
+        return False
+    return int(stall_meta.get("stalledSeconds", 0) or 0) >= CONFIG.probe_rotation_seconds
+
+
+def prune_probe_quarantine(store: StateStore) -> dict[str, int]:
+    raw = store.runtime.setdefault("probe_quarantine_until", {})
+    now = now_ts()
+    active: dict[str, int] = {}
+    for torrent_hash, until_ts in list(raw.items()):
+        try:
+            parsed = int(until_ts or 0)
+        except (TypeError, ValueError):
+            continue
+        if parsed > now:
+            active[torrent_hash] = parsed
+    store.runtime["probe_quarantine_until"] = active
+    return active
+
+
+def note_probe_quarantine(store: StateStore, hashes: list[str]) -> None:
+    if not hashes:
+        return
+    quarantine = prune_probe_quarantine(store)
+    until_ts = now_ts() + CONFIG.probe_quarantine_seconds
+    for torrent_hash in hashes:
+        quarantine[torrent_hash] = until_ts
+    store.runtime["probe_quarantine_until"] = quarantine
+
+
+def clear_probe_quarantine(store: StateStore, hashes: list[str]) -> None:
+    if not hashes:
+        return
+    quarantine = prune_probe_quarantine(store)
+    for torrent_hash in hashes:
+        quarantine.pop(torrent_hash, None)
+    store.runtime["probe_quarantine_until"] = quarantine
+
+
 def infer_app_name(torrent: dict[str, Any]) -> str | None:
     category = str(torrent.get("category") or "").strip().lower()
     if category in {"radarr", "sonarr", "lidarr"}:
@@ -645,6 +735,7 @@ def infer_app_name(torrent: dict[str, Any]) -> str | None:
 
 def update_stall_state(store: StateStore, torrent: dict[str, Any]) -> dict[str, Any]:
     stalled_since = store.runtime.setdefault("stalled_since", {})
+    probe_quarantine = store.runtime.setdefault("probe_quarantine_until", {})
     torrent_hash = torrent["hash"]
     state = str(torrent.get("state") or "")
     dlspeed = int(torrent.get("dlspeed", 0) or 0)
@@ -655,13 +746,16 @@ def update_stall_state(store: StateStore, torrent: dict[str, Any]) -> dict[str, 
         stalled_since.setdefault(torrent_hash, now_ts())
     else:
         stalled_since.pop(torrent_hash, None)
+        probe_quarantine.pop(torrent_hash, None)
 
     started_at = stalled_since.get(torrent_hash)
     stalled_seconds = max(0, now_ts() - started_at) if started_at else 0
+    probe_stalled = stalled_seconds >= CONFIG.stall_probe_seconds
     long_stalled = stalled_seconds >= CONFIG.stall_failover_seconds
 
     return {
         "stalledSeconds": stalled_seconds,
+        "probeStalled": probe_stalled,
         "longStalled": long_stalled,
     }
 
@@ -868,6 +962,7 @@ def collect_workload_metrics(candidates: list[dict[str, Any]], stall_metadata: d
     scheduled = [torrent for torrent in candidates if is_active_download_state(str(torrent.get("state") or ""))]
     downloading = [torrent for torrent in candidates if str(torrent.get("state") or "") in {"downloading", "forcedDL"}]
     moving = [torrent for torrent in scheduled if download_speed(torrent) > 0]
+    probe_stalled = [torrent for torrent in candidates if stall_metadata.get(torrent["hash"], {}).get("probeStalled")]
     long_stalled = [torrent for torrent in candidates if stall_metadata.get(torrent["hash"], {}).get("longStalled")]
     metadata_missing = [torrent for torrent in candidates if not has_metadata(torrent)]
     missing_files = [torrent for torrent in candidates if is_missing_files_state(torrent)]
@@ -897,6 +992,7 @@ def collect_workload_metrics(candidates: list[dict[str, Any]], stall_metadata: d
         "scheduledCount": len(scheduled),
         "downloadingStateCount": len(downloading),
         "movingCount": len(moving),
+        "probeStalledCount": len(probe_stalled),
         "longStalledCount": len(long_stalled),
         "metadataMissingCount": len(metadata_missing),
         "missingFilesCount": len(missing_files),
@@ -907,7 +1003,7 @@ def collect_workload_metrics(candidates: list[dict[str, Any]], stall_metadata: d
         "totalDownloadSpeed": total_speed,
         "averageMovingSpeed": average_speed,
         "remainingBytes": total_remaining,
-        "stalledRatio": round((len(long_stalled) / len(candidates)), 3) if candidates else 0,
+        "stalledRatio": round((len(probe_stalled) / len(candidates)), 3) if candidates else 0,
     }
 
 
@@ -966,11 +1062,13 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
     dlspeed = download_speed(torrent)
     availability = availability_value(torrent)
     seeds = seed_count(torrent)
+    leechs = int(torrent.get("num_leechs", 0) or 0)
     torrent_has_metadata = has_metadata(torrent)
     remaining = remaining_bytes(torrent)
     added_on = int(torrent.get("added_on", 0) or 0)
     currently_moving = dlspeed > 0
     long_stalled = bool(stall_meta["longStalled"])
+    probe_stalled = bool(stall_meta.get("probeStalled"))
     state = str(torrent.get("state") or "")
     completion_priority = is_completion_priority(torrent)
     healthy_swarm = is_swarm_healthy(torrent, stall_meta)
@@ -982,17 +1080,29 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
         viability_bucket = 3
     elif long_stalled:
         viability_bucket = 2
+    elif probe_stalled and not currently_moving:
+        viability_bucket = 1
     elif not healthy_swarm and not currently_moving:
         viability_bucket = 1
     elif seeds <= 0 and availability <= 0 and not currently_moving:
         viability_bucket = 2
+
+    state_bucket = 0
+    if not currently_moving:
+        if state == "stalledDL":
+            state_bucket = 2
+        elif state in {"downloading", "forcedDL"}:
+            state_bucket = 1
+    peer_signal = -(min(seeds, 50) + min(leechs, 50))
 
     if mode in {"emergency", "constrained", "focused"}:
         return (
             viability_bucket,
             0 if currently_moving else 1,
             0 if completion_priority else 1,
-            0 if state in {"downloading", "forcedDL"} else 1,
+            state_bucket,
+            peer_signal,
+            -availability,
             -progress,
             remaining,
             added_on,
@@ -1009,6 +1119,7 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
 
 
 def choose_allowed(
+    store: StateStore,
     candidates: list[dict[str, Any]],
     mode: str,
     free_bytes: int,
@@ -1027,8 +1138,22 @@ def choose_allowed(
         candidates,
         key=lambda torrent: selection_key(torrent, mode, stall_metadata.get(torrent["hash"], {"stalledSeconds": 0, "longStalled": False})),
     )
+    quarantined_hashes = set(prune_probe_quarantine(store).keys())
+    preferred_candidates = [
+        torrent
+        for torrent in sorted_candidates
+        if torrent["hash"] not in quarantined_hashes
+        and not is_probe_rotation_candidate(
+            torrent,
+            stall_metadata.get(
+                torrent["hash"],
+                {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            ),
+        )
+    ]
+    selection_pool = preferred_candidates or sorted_candidates
 
-    for torrent in sorted_candidates:
+    for torrent in selection_pool:
         if len(allowed) >= target:
             break
 
@@ -1382,11 +1507,32 @@ def queue_entry_has_file(app_name: str, record: dict[str, Any]) -> bool:
     return bool(record.get("hasFile"))
 
 
+def wanted_entry_has_file(app_name: str, record: dict[str, Any]) -> bool:
+    if app_name in {"radarr", "sonarr"}:
+        return bool(record.get("hasFile", False))
+    if app_name == "lidarr":
+        stats = record.get("statistics") or {}
+        track_file_count = int(stats.get("trackFileCount", 0) or 0)
+        track_count = int(stats.get("trackCount", 0) or 0)
+        return track_count > 0 and track_file_count >= track_count
+    return False
+
+
 def first_parseable_ts(*values: Any) -> int:
     for value in values:
         parsed = ArrHistoryCollector._parse_ts(str(value)) if value else None
         if parsed:
             return parsed
+    return 0
+
+
+def wanted_entry_reference_ts(app_name: str, record: dict[str, Any]) -> int:
+    if app_name == "radarr":
+        return first_parseable_ts(record.get("lastSearchTime"), record.get("added"))
+    if app_name == "sonarr":
+        return first_parseable_ts(record.get("lastSearchTime"), record.get("airDateUtc"))
+    if app_name == "lidarr":
+        return first_parseable_ts(record.get("lastSearchTime"), record.get("releaseDate"))
     return 0
 
 
@@ -1411,10 +1557,23 @@ def retry_limit_for_reason(reason: str) -> int:
     }.get(reason, CONFIG.max_arr_search_retries_orphan)
 
 
+def qbit_recovery_limits(suspect: dict[str, Any]) -> tuple[int, int]:
+    if str(suspect.get("brokenReason") or "") == "stalled-no-progress":
+        return (
+            CONFIG.max_qbit_stall_recovery_attempts_per_hash,
+            CONFIG.min_qbit_stall_recovery_interval_seconds,
+        )
+    return (
+        CONFIG.max_qbit_recovery_attempts_per_hash,
+        CONFIG.min_qbit_recovery_interval_seconds,
+    )
+
+
 def build_orphan_report(
     torrents: list[dict[str, Any]],
     arr_events: dict[str, dict[str, Any]],
     arr_collector: ArrHistoryCollector,
+    stall_metadata: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1427,6 +1586,7 @@ def build_orphan_report(
 
     grace_cutoff = now_ts() - (CONFIG.import_grace_hours * 3600)
     broken_cutoff = now_ts() - (CONFIG.broken_download_grace_hours * 3600)
+    stall_metadata = stall_metadata or {}
 
     for torrent in torrents:
         download_id = str(torrent.get("hash") or "").lower()
@@ -1435,16 +1595,23 @@ def build_orphan_report(
         app_event = event_bundle.get("apps", {}).get(app_name, {}) if app_name else {}
         imported = app_event.get("latestImported")
         grabbed = app_event.get("latestGrabbed")
+        stall_meta = stall_metadata.get(download_id, {"stalledSeconds": 0, "longStalled": False})
+        missing_files = is_missing_files_state(torrent)
+        stalled_recovery = is_stalled_recovery_candidate(torrent, stall_meta)
 
         if is_incomplete(torrent):
             if (
                 app_name
-                and grabbed
                 and not imported
-                and is_missing_files_state(torrent)
+                and (missing_files or stalled_recovery)
             ):
-                reference_ts = int(torrent.get("completion_on", 0) or 0) or int(torrent.get("added_on", 0) or 0)
-                if reference_ts > 0 and reference_ts <= broken_cutoff:
+                reference_ts = recovery_reference_ts(torrent)
+                qualifies_for_recovery = False
+                if missing_files and reference_ts > 0 and reference_ts <= broken_cutoff:
+                    qualifies_for_recovery = True
+                if stalled_recovery:
+                    qualifies_for_recovery = True
+                if qualifies_for_recovery:
                     broken_suspect = {
                         "hash": torrent.get("hash"),
                         "name": torrent.get("name"),
@@ -1455,17 +1622,23 @@ def build_orphan_report(
                         "referenceTs": reference_ts,
                         "lane": "broken-recovery",
                         "priority": 5,
+                        "brokenReason": "missing-files" if missing_files else "stalled-no-progress",
+                        "stalledSeconds": int(stall_meta.get("stalledSeconds", 0) or 0),
                         "recoveryMode": "replace",
                         "maxRetries": CONFIG.max_arr_search_retries_broken,
                         "recommendedActions": [],
                     }
-                    if seed_count(torrent) > 0 or availability_value(torrent) > 0:
+                    if broken_swarm_should_salvage(torrent):
                         broken_suspect["recoveryMode"] = "salvage"
-                        broken_suspect["recommendedActions"].extend(
-                            [{"type": "qbit-recheck"}, {"type": "qbit-reannounce"}]
-                        )
+                        if missing_files:
+                            broken_suspect["recommendedActions"].append({"type": "qbit-recheck"})
+                        broken_suspect["recommendedActions"].append({"type": "qbit-reannounce"})
+                        if stalled_recovery:
+                            broken_suspect["recommendedActions"].append({"type": "qbit-soft-reset"})
+                    else:
+                        broken_suspect["recommendedActions"].append({"type": "qbit-delete", "deleteFiles": False})
 
-                    search_action = build_arr_search_action(app_name, grabbed, arr_collector)
+                    search_action = build_arr_search_action(app_name, grabbed, arr_collector) if grabbed else None
                     if search_action:
                         broken_suspect["recommendedActions"].append(search_action)
 
@@ -1636,54 +1809,54 @@ def build_backlog_candidates(
                 }
             )
 
-    for record in arr_wanted.get("radarr", []):
-        entity_id = extract_arr_entity_id("radarr", record)
-        if entity_id <= 0 or not bool(record.get("monitored", False)) or bool(record.get("hasFile", False)):
-            continue
-        if record.get("isAvailable") is False:
-            continue
+    for app_name, records in arr_wanted.items():
+        for record in records:
+            entity_id = extract_arr_entity_id(app_name, record)
+            if entity_id <= 0 or not bool(record.get("monitored", False)) or wanted_entry_has_file(app_name, record):
+                continue
+            if app_name == "radarr" and record.get("isAvailable") is False:
+                continue
 
-        entity_data = entity_index.get("radarr", {}).get(entity_id, {})
-        if entity_data.get("latestImported") or entity_id in queue_index.get("radarr", {}):
-            continue
+            entity_data = entity_index.get(app_name, {}).get(entity_id, {})
+            if entity_data.get("latestImported") or entity_id in queue_index.get(app_name, {}):
+                continue
 
-        added_ts = first_parseable_ts(record.get("added"))
-        last_search_ts = first_parseable_ts(record.get("lastSearchTime"))
-        reference_ts = last_search_ts or added_ts
-        if reference_ts <= 0 or reference_ts > stale_cutoff:
-            continue
-        if added_ts and added_ts < lookback_cutoff:
-            continue
+            added_ts = first_parseable_ts(record.get("added"), record.get("airDateUtc"), record.get("releaseDate"))
+            reference_ts = wanted_entry_reference_ts(app_name, record)
+            if reference_ts <= 0 or reference_ts > stale_cutoff:
+                continue
+            if added_ts and added_ts < lookback_cutoff:
+                continue
 
-        action = build_arr_search_action_for_entity(
-            "radarr",
-            entity_id,
-            arr_collector,
-            reason="wanted-missing-stale",
-        )
-        if not action:
-            continue
+            action = build_arr_search_action_for_entity(
+                app_name,
+                entity_id,
+                arr_collector,
+                reason="wanted-missing-stale",
+            )
+            if not action:
+                continue
 
-        action_key = str(action.get("actionKey") or "")
-        if action_key in seen_action_keys:
-            continue
-        seen_action_keys.add(action_key)
+            action_key = str(action.get("actionKey") or "")
+            if action_key in seen_action_keys:
+                continue
+            seen_action_keys.add(action_key)
 
-        candidates.append(
-            {
-                "app": "radarr",
-                "entityId": entity_id,
-                "title": record.get("title"),
-                "lane": "backlog-wanted",
-                "reason": "wanted-missing-stale",
-                "priority": 35,
-                "maxRetries": CONFIG.max_arr_search_retries_wanted,
-                "referenceTs": reference_ts,
-                "added": record.get("added"),
-                "lastSearchTime": record.get("lastSearchTime"),
-                "recommendedAction": action,
-            }
-        )
+            candidates.append(
+                {
+                    "app": app_name,
+                    "entityId": entity_id,
+                    "title": record.get("title"),
+                    "lane": "backlog-wanted",
+                    "reason": "wanted-missing-stale",
+                    "priority": 35,
+                    "maxRetries": CONFIG.max_arr_search_retries_wanted,
+                    "referenceTs": reference_ts,
+                    "added": record.get("added") or record.get("airDateUtc") or record.get("releaseDate"),
+                    "lastSearchTime": record.get("lastSearchTime"),
+                    "recommendedAction": action,
+                }
+            )
 
     candidates.sort(key=lambda item: (int(item.get("priority", 99)), int(item.get("referenceTs", 0) or 0)))
     return candidates
@@ -1692,6 +1865,7 @@ def build_backlog_candidates(
 def maybe_apply_arr_recovery(
     store: StateStore,
     arr_collector: ArrHistoryCollector,
+    client: QBClient,
     report: dict[str, Any],
 ) -> dict[str, Any]:
     dispatch = {"triggered": [], "skipped": []}
@@ -1710,16 +1884,21 @@ def maybe_apply_arr_recovery(
     for suspect in report.get("brokenSuspects", []):
         if not CONFIG.allow_broken_download_recovery:
             continue
+        qbit_retry_limit, _ = qbit_recovery_limits(suspect)
         if (
             CONFIG.allow_qbit_recovery_actions
             and suspect.get("recoveryMode") == "salvage"
             and normalize_action_history_entry(qbit_recovery_history.get(str(suspect.get("hash") or ""))).get("triggerCount", 0)
-            < CONFIG.max_qbit_recovery_attempts_per_hash
+            < qbit_retry_limit
         ):
             continue
         for action in suspect.get("recommendedActions", []):
             if action.get("type") == "arr-search-command":
                 candidate = dict(suspect)
+                candidate["cleanupAction"] = next(
+                    (item for item in suspect.get("recommendedActions", []) if item.get("type") == "qbit-delete"),
+                    None,
+                )
                 candidate["reason"] = (
                     "broken-salvage-fallback"
                     if suspect.get("recoveryMode") == "salvage"
@@ -1790,6 +1969,16 @@ def maybe_apply_arr_recovery(
             continue
 
         try:
+            cleanup_action = candidate.get("cleanupAction")
+            if isinstance(cleanup_action, dict) and str(candidate.get("hash") or ""):
+                client.delete(
+                    [str(candidate.get("hash") or "")],
+                    bool(cleanup_action.get("deleteFiles", False)),
+                )
+                candidate["cleanupTriggered"] = {
+                    "type": cleanup_action.get("type"),
+                    "deleteFiles": bool(cleanup_action.get("deleteFiles", False)),
+                }
             result = arr_collector.run_search_action(str(candidate.get("app") or ""), action)
             if result is not None:
                 candidate["retryTriggered"] = result
@@ -1806,6 +1995,7 @@ def maybe_apply_arr_recovery(
                         "lane": candidate.get("lane"),
                         "title": candidate.get("title"),
                         "reason": candidate.get("reason"),
+                        "cleanupTriggered": candidate.get("cleanupTriggered"),
                     }
                 )
         except Exception as exc:
@@ -1847,42 +2037,61 @@ def maybe_apply_qbit_recovery(store: StateStore, client: QBClient, report: dict[
             continue
 
         history_entry = normalize_action_history_entry(history.get(torrent_hash))
-        if history_entry["triggerCount"] >= CONFIG.max_qbit_recovery_attempts_per_hash:
+        retry_limit, cooldown_seconds = qbit_recovery_limits(suspect)
+        if history_entry["triggerCount"] >= retry_limit:
             dispatch["skipped"].append(
                 {
                     "hash": torrent_hash,
                     "reason": "retry-limit",
                     "triggerCount": history_entry["triggerCount"],
-                    "maxRetries": CONFIG.max_qbit_recovery_attempts_per_hash,
+                    "maxRetries": retry_limit,
                 }
             )
             continue
 
         last_triggered = history_entry["lastTriggeredAt"]
-        if last_triggered and now - last_triggered < CONFIG.min_qbit_recovery_interval_seconds:
+        if last_triggered and now - last_triggered < cooldown_seconds:
             dispatch["skipped"].append(
                 {
                     "hash": torrent_hash,
                     "reason": "cooldown",
-                    "remainingSeconds": CONFIG.min_qbit_recovery_interval_seconds - (now - last_triggered),
+                    "remainingSeconds": cooldown_seconds - (now - last_triggered),
                 }
             )
             continue
 
         try:
-            client.recheck([torrent_hash])
-            client.reannounce([torrent_hash])
+            action_types = {
+                str(action.get("type") or "")
+                for action in suspect.get("recommendedActions", [])
+                if isinstance(action, dict)
+            }
+            applied = {"recheck": False, "reannounce": False, "softReset": False}
+            if "qbit-recheck" in action_types:
+                client.recheck([torrent_hash])
+                applied["recheck"] = True
+            if "qbit-reannounce" in action_types:
+                client.reannounce([torrent_hash])
+                applied["reannounce"] = True
+            if "qbit-soft-reset" in action_types:
+                client.stop([torrent_hash])
+                client.start([torrent_hash])
+                applied["softReset"] = True
+            if not any(applied.values()):
+                dispatch["skipped"].append({"hash": torrent_hash, "reason": "no-actions"})
+                continue
             history[torrent_hash] = {
                 "lastTriggeredAt": now,
                 "triggerCount": history_entry["triggerCount"] + 1,
             }
-            suspect["qbitRecoveryTriggered"] = {"recheck": True, "reannounce": True}
+            suspect["qbitRecoveryTriggered"] = applied
             triggered += 1
             dispatch["triggered"].append(
                 {
                     "hash": torrent_hash,
                     "title": suspect.get("name"),
                     "recoveryMode": suspect.get("recoveryMode"),
+                    "applied": applied,
                 }
             )
         except Exception as exc:
@@ -1943,6 +2152,7 @@ def update_stability_guard(
     to_stop: list[str],
     to_start: list[str],
     pref_updates: dict[str, int],
+    rotation_urgent: bool = False,
 ) -> dict[str, Any]:
     stability = store.runtime.setdefault("stability", {})
     now = now_ts()
@@ -1971,9 +2181,14 @@ def update_stability_guard(
     last_pref_write_at = int(stability.get("lastPrefWriteAt", 0) or 0)
     last_torrent_action_at = int(stability.get("lastTorrentActionAt", 0) or 0)
     pref_write_cooldown_remaining = max(0, CONFIG.min_pref_write_interval_seconds - (now - last_pref_write_at))
+    effective_torrent_action_interval = (
+        min(CONFIG.min_torrent_action_interval_seconds, CONFIG.min_rotation_action_interval_seconds)
+        if rotation_urgent
+        else CONFIG.min_torrent_action_interval_seconds
+    )
     torrent_action_cooldown_remaining = max(
         0,
-        CONFIG.min_torrent_action_interval_seconds - (now - last_torrent_action_at),
+        effective_torrent_action_interval - (now - last_torrent_action_at),
     )
 
     pref_plan_present = bool(pref_updates)
@@ -1996,8 +2211,10 @@ def update_stability_guard(
         "prefStableCycles": pref_stable_cycles,
         "prefWritesReady": pref_writes_ready,
         "torrentControlReady": torrent_control_ready,
+        "rotationUrgent": rotation_urgent,
         "prefWriteCooldownRemainingSeconds": pref_write_cooldown_remaining,
         "torrentActionCooldownRemainingSeconds": torrent_action_cooldown_remaining,
+        "effectiveTorrentActionIntervalSeconds": effective_torrent_action_interval,
     }
 
 
@@ -2022,7 +2239,7 @@ def plan_torrent_actions(
             (torrent for torrent in candidates if torrent["hash"] in allowed_hashes),
             key=lambda item: selection_key(item, mode, stall_metadata[item["hash"]]),
         )
-        if str(torrent.get("state") or "") in {"pausedDL", "stoppedDL", "queuedDL", "stalledDL", "metaDL", "checkingDL"}
+        if str(torrent.get("state") or "") in {"pausedDL", "stoppedDL", "queuedDL", "metaDL", "checkingDL"}
     ]
 
     non_allowed_active = [
@@ -2102,12 +2319,35 @@ def maybe_apply_qbit_pref_writes(client: QBClient, updates: dict[str, Any], writ
     return False
 
 
-def maybe_apply_torrent_control(client: QBClient, to_stop: list[str], to_start: list[str], control_ready: bool) -> bool:
+def maybe_apply_torrent_control(
+    store: StateStore,
+    client: QBClient,
+    candidates: list[dict[str, Any]],
+    stall_metadata: dict[str, dict[str, Any]],
+    to_stop: list[str],
+    to_start: list[str],
+    control_ready: bool,
+) -> bool:
     if CONFIG.observe_only or not CONFIG.allow_torrent_control or not control_ready:
         return False
+    candidate_by_hash = {torrent["hash"]: torrent for torrent in candidates}
+    probe_quarantine_hashes = [
+        torrent_hash
+        for torrent_hash in to_stop
+        if torrent_hash in candidate_by_hash
+        and is_probe_rotation_candidate(
+            candidate_by_hash[torrent_hash],
+            stall_metadata.get(
+                torrent_hash,
+                {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            ),
+        )
+    ]
     if to_stop:
         client.stop(to_stop)
+        note_probe_quarantine(store, probe_quarantine_hashes)
     if to_start:
+        clear_probe_quarantine(store, to_start)
         client.start(to_start)
     return bool(to_stop or to_start)
 
@@ -2137,6 +2377,7 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
     protected_ok, protected_meta = protected_settings_guard(store, prefs, categories)
 
     candidates = [torrent for torrent in torrents if is_manageable(torrent)]
+    candidate_by_hash = {torrent["hash"]: torrent for torrent in candidates}
     stall_metadata = {torrent["hash"]: update_stall_state(store, torrent) for torrent in candidates}
     reserved_downloaders = reserved_active_downloads(torrents, stall_metadata)
     weak_reserved_downloaders = weak_reserved_active_downloads(torrents, stall_metadata)
@@ -2161,12 +2402,26 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         viable_count,
         len(weak_reserved_downloaders),
     )
-    allowed = choose_allowed(candidates, mode, free_bytes, stall_metadata, desired_active_downloads) if action_guard_ok else []
+    allowed = choose_allowed(store, candidates, mode, free_bytes, stall_metadata, desired_active_downloads) if action_guard_ok else []
     allowed_hashes = {torrent["hash"] for torrent in allowed}
     to_stop, to_start = (
         plan_torrent_actions(candidates, allowed_hashes, mode, stall_metadata, desired_active_downloads)
         if action_guard_ok
         else ([], [])
+    )
+    rotation_urgent = workload_metrics.get("movingCount", 0) <= 0 and (
+        bool(to_start)
+        or any(
+            torrent_hash in candidate_by_hash
+            and is_probe_rotation_candidate(
+                candidate_by_hash[torrent_hash],
+                stall_metadata.get(
+                    torrent_hash,
+                    {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+                ),
+            )
+            for torrent_hash in to_stop
+        )
     )
     pref_updates, pref_diff, pref_targets, speed_reasons = plan_qbit_pref_writes(
         prefs,
@@ -2180,13 +2435,21 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         desired_active_downloads_total,
         workload_metrics,
     )
-    stability_meta = update_stability_guard(store, mode, to_stop, to_start, pref_updates)
+    stability_meta = update_stability_guard(store, mode, to_stop, to_start, pref_updates, rotation_urgent)
     start_hashes = set(to_start)
     stop_hashes = set(to_stop)
     if action_guard_ok:
         if maybe_apply_qbit_pref_writes(qbit, pref_updates, stability_meta["prefWritesReady"]):
             note_pref_write(store)
-        if maybe_apply_torrent_control(qbit, to_stop, to_start, stability_meta["torrentControlReady"]):
+        if maybe_apply_torrent_control(
+            store,
+            qbit,
+            candidates,
+            stall_metadata,
+            to_stop,
+            to_start,
+            stability_meta["torrentControlReady"],
+        ):
             note_torrent_action(store)
 
     arr_collector = ArrHistoryCollector()
@@ -2194,8 +2457,8 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
     arr_history_hours = max(CONFIG.arr_history_lookback_hours, CONFIG.retro_repair_lookback_hours)
     arr_events = arr_collector.recent_events(arr_history_hours)
     arr_queue = arr_collector.queue_records()
-    arr_wanted = arr_collector.wanted_missing_records(("radarr",))
-    orphan_report = build_orphan_report(torrents, arr_events, arr_collector)
+    arr_wanted = arr_collector.wanted_missing_records(("radarr", "sonarr", "lidarr"))
+    orphan_report = build_orphan_report(torrents, arr_events, arr_collector, stall_metadata)
     orphan_report["retroRepairCandidates"] = build_retroactive_arr_repair_candidates(
         torrents,
         arr_events,
@@ -2210,7 +2473,7 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         arr_collector,
     )
     maybe_apply_qbit_recovery(store, qbit, orphan_report)
-    maybe_apply_arr_recovery(store, arr_collector, orphan_report)
+    maybe_apply_arr_recovery(store, arr_collector, qbit, orphan_report)
     store.write_orphan_report(orphan_report)
 
     snapshot = {
@@ -2264,6 +2527,11 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
             "targets": advanced_speed_advisories,
         },
         "stabilityGuard": stability_meta,
+        "probeRotation": {
+            "quarantineCount": len(prune_probe_quarantine(store)),
+            "rotationSeconds": CONFIG.probe_rotation_seconds,
+            "quarantineSeconds": CONFIG.probe_quarantine_seconds,
+        },
         "qbitPreferenceAudit": {
             "snapshotPath": str(QBIT_PREFS_PATH),
             "preferenceCount": len(current_pref_keys),

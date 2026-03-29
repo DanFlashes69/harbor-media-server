@@ -18,6 +18,8 @@ def make_torrent(
     added_on: int | None = None,
     completion_on: int = 0,
     save_path: str | None = None,
+    last_activity: int | None = None,
+    seen_complete: int = 0,
 ) -> dict:
     return {
         "hash": torrent_hash,
@@ -35,24 +37,38 @@ def make_torrent(
         "added_on": added_on if added_on is not None else orch.now_ts() - 7200,
         "completion_on": completion_on,
         "save_path": save_path or f"/downloads/{category}",
+        "last_activity": last_activity if last_activity is not None else orch.now_ts() - 7200,
+        "seen_complete": seen_complete,
     }
 
 
 class FakeStore:
     def __init__(self) -> None:
-        self.runtime = {}
+        self.runtime = {"probe_quarantine_until": {}}
 
 
 class FakeQBClient:
     def __init__(self) -> None:
         self.rechecked: list[list[str]] = []
         self.reannounced: list[list[str]] = []
+        self.stopped: list[list[str]] = []
+        self.started: list[list[str]] = []
+        self.deleted: list[dict[str, object]] = []
 
     def recheck(self, hashes: list[str]) -> None:
         self.rechecked.append(list(hashes))
 
     def reannounce(self, hashes: list[str]) -> None:
         self.reannounced.append(list(hashes))
+
+    def stop(self, hashes: list[str]) -> None:
+        self.stopped.append(list(hashes))
+
+    def start(self, hashes: list[str]) -> None:
+        self.started.append(list(hashes))
+
+    def delete(self, hashes: list[str], delete_files: bool = False) -> None:
+        self.deleted.append({"hashes": list(hashes), "deleteFiles": delete_files})
 
 
 class OrchestratorScenarioTests(unittest.TestCase):
@@ -401,6 +417,24 @@ class OrchestratorScenarioTests(unittest.TestCase):
         self.assertGreaterEqual(len(to_stop), 2)
         self.assertEqual(to_stop[:2], ["drop2", "drop1"])
 
+    def test_action_plan_does_not_restart_probe_stalled_allowed_torrent(self) -> None:
+        candidates = [
+            make_torrent(
+                "probe-stalled",
+                "Probe Stalled",
+                state="stalledDL",
+                category="lidarr",
+                progress=0.2,
+                amount_left=500 * 1024**2,
+                availability=1.1,
+                num_seeds=1,
+            )
+        ]
+        stall = {"probe-stalled": {"stalledSeconds": 400, "probeStalled": True, "longStalled": False}}
+        to_stop, to_start = orch.plan_torrent_actions(candidates, {"probe-stalled"}, "constrained", stall, 1)
+        self.assertEqual(to_stop, [])
+        self.assertEqual(to_start, [])
+
     def test_force_started_download_reserves_capacity(self) -> None:
         candidates = [
             make_torrent(
@@ -504,7 +538,7 @@ class OrchestratorScenarioTests(unittest.TestCase):
             make_torrent("d", "D", progress=0.25, amount_left=20 * 1024**3, num_seeds=2, availability=2.0),
         ]
         stall = {torrent["hash"]: {"stalledSeconds": 0, "longStalled": False} for torrent in candidates}
-        allowed = orch.choose_allowed(candidates, "constrained", int(30 * 1024**3), stall, 3)
+        allowed = orch.choose_allowed(FakeStore(), candidates, "constrained", int(30 * 1024**3), stall, 3)
         total_remaining = sum(t["amount_left"] for t in allowed[1:])
         self.assertLessEqual(total_remaining, int((30 - orch.CONFIG.reserved_free_gb) * 1024**3))
 
@@ -534,8 +568,112 @@ class OrchestratorScenarioTests(unittest.TestCase):
             ),
         ]
         stall = {torrent["hash"]: {"stalledSeconds": 0, "longStalled": False} for torrent in candidates}
-        allowed = orch.choose_allowed(candidates, "constrained", int(25 * 1024**3), stall, 1)
+        allowed = orch.choose_allowed(FakeStore(), candidates, "constrained", int(25 * 1024**3), stall, 1)
         self.assertEqual([torrent["hash"] for torrent in allowed], ["seeded"])
+
+    def test_choose_allowed_rotates_away_from_stalled_active_probe(self) -> None:
+        stalled_active = make_torrent(
+            "stalled",
+            "Stalled Active",
+            state="stalledDL",
+            dlspeed=0,
+            progress=0.35,
+            amount_left=2 * 1024**3,
+            num_seeds=1,
+            availability=1.05,
+            category="lidarr",
+        )
+        fresh_probe = make_torrent(
+            "fresh",
+            "Fresh Probe",
+            state="stoppedDL",
+            dlspeed=0,
+            progress=0.05,
+            amount_left=3 * 1024**3,
+            num_seeds=2,
+            availability=1.4,
+            category="sonarr",
+        )
+        stall = {
+            "stalled": {"stalledSeconds": orch.CONFIG.probe_rotation_seconds + 5, "probeStalled": False, "longStalled": False},
+            "fresh": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(FakeStore(), [stalled_active, fresh_probe], "constrained", int(30 * 1024**3), stall, 1)
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["fresh"])
+
+    def test_choose_allowed_falls_back_when_only_rotated_probe_exists(self) -> None:
+        stalled_active = make_torrent(
+            "stalled",
+            "Only Probe",
+            state="stalledDL",
+            dlspeed=0,
+            progress=0.35,
+            amount_left=2 * 1024**3,
+            num_seeds=1,
+            availability=1.05,
+            category="lidarr",
+        )
+        stall = {
+            "stalled": {"stalledSeconds": orch.CONFIG.probe_rotation_seconds + 5, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(FakeStore(), [stalled_active], "constrained", int(30 * 1024**3), stall, 1)
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["stalled"])
+
+    def test_maybe_apply_torrent_control_quarantines_rotated_probe(self) -> None:
+        store = FakeStore()
+        client = FakeQBClient()
+        torrent = make_torrent(
+            "stalled",
+            "Rotated Probe",
+            state="stalledDL",
+            dlspeed=0,
+            progress=0.2,
+            amount_left=1 * 1024**3,
+            num_seeds=1,
+            availability=1.02,
+        )
+        stall = {
+            "stalled": {"stalledSeconds": orch.CONFIG.probe_rotation_seconds + 5, "probeStalled": False, "longStalled": False},
+        }
+        original_observe = orch.CONFIG.observe_only
+        original_allow = orch.CONFIG.allow_torrent_control
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_torrent_control", True)
+            changed = orch.maybe_apply_torrent_control(store, client, [torrent], stall, ["stalled"], [], True)
+            self.assertTrue(changed)
+            self.assertEqual(client.stopped, [["stalled"]])
+            self.assertIn("stalled", store.runtime["probe_quarantine_until"])
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_torrent_control", original_allow)
+
+    def test_rotation_urgent_shortens_torrent_action_cooldown(self) -> None:
+        store = FakeStore()
+        original_default = orch.CONFIG.min_torrent_action_interval_seconds
+        original_rotation = orch.CONFIG.min_rotation_action_interval_seconds
+        try:
+            object.__setattr__(orch.CONFIG, "min_torrent_action_interval_seconds", 300)
+            object.__setattr__(orch.CONFIG, "min_rotation_action_interval_seconds", 60)
+            store.runtime["stability"] = {
+                "lastTorrentActionAt": orch.now_ts() - 90,
+                "modeSignature": "constrained",
+                "selectionSignature": orch.stable_signature({"start": ["start-hash"], "stop": ["stop-hash"]}),
+                "selectionStableCycles": orch.CONFIG.control_stability_cycles,
+            }
+            meta = orch.update_stability_guard(
+                store,
+                "constrained",
+                ["stop-hash"],
+                ["start-hash"],
+                {},
+                rotation_urgent=True,
+            )
+            self.assertTrue(meta["torrentControlReady"])
+            self.assertEqual(meta["effectiveTorrentActionIntervalSeconds"], 60)
+        finally:
+            object.__setattr__(orch.CONFIG, "min_torrent_action_interval_seconds", original_default)
+            object.__setattr__(orch.CONFIG, "min_rotation_action_interval_seconds", original_rotation)
 
     def test_broken_download_recovery_does_not_fire_when_gate_off(self) -> None:
         original_allow_arr = orch.CONFIG.allow_arr_commands
@@ -558,7 +696,7 @@ class OrchestratorScenarioTests(unittest.TestCase):
                 {"recover3": {"apps": {"radarr": {"latestGrabbed": grabbed, "latestImported": None, "records": [grabbed]}}}},
                 arr_collector,
             )
-            dispatch = orch.maybe_apply_arr_recovery(FakeStore(), arr_collector, report)
+            dispatch = orch.maybe_apply_arr_recovery(FakeStore(), arr_collector, FakeQBClient(), report)
             suspect = report["brokenSuspects"][0]
             self.assertNotIn("retryTriggered", suspect)
             self.assertNotIn("retryError", suspect)
@@ -587,6 +725,7 @@ class OrchestratorScenarioTests(unittest.TestCase):
         )
         self.assertEqual(len(report["brokenSuspects"]), 1)
         actions = report["brokenSuspects"][0]["recommendedActions"]
+        self.assertTrue(any(action.get("type") == "qbit-delete" for action in actions))
         self.assertTrue(any(action.get("type") == "arr-search-command" for action in actions))
 
     def test_missing_files_salvage_recommends_qbit_recovery_first(self) -> None:
@@ -613,6 +752,87 @@ class OrchestratorScenarioTests(unittest.TestCase):
         self.assertIn("qbit-recheck", action_types)
         self.assertIn("qbit-reannounce", action_types)
         self.assertIn("arr-search-command", action_types)
+
+    def test_missing_files_with_negative_completion_uses_recent_activity_as_reference(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        recent_activity = orch.now_ts() - 10_000
+        torrent = make_torrent(
+            "recover-negative",
+            "Negative Completion Missing",
+            state="missingFiles",
+            amount_left=8 * 1024**3,
+            progress=0.0,
+            num_seeds=0,
+            availability=0.0,
+            added_on=orch.now_ts() - 100_000,
+            completion_on=-1,
+            last_activity=recent_activity,
+            seen_complete=recent_activity,
+        )
+        grabbed = {"eventType": "grabbed", "date": "2026-03-28T00:00:00Z", "movieId": 321}
+        report = orch.build_orphan_report(
+            [torrent],
+            {"recover-negative": {"apps": {"radarr": {"latestGrabbed": grabbed, "latestImported": None, "records": [grabbed]}}}},
+            arr_collector,
+        )
+        self.assertEqual(len(report["brokenSuspects"]), 1)
+        self.assertEqual(report["brokenSuspects"][0]["referenceTs"], recent_activity)
+
+    def test_long_stalled_torrent_enters_broken_recovery_lane(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        torrent = make_torrent(
+            "recover-stalled",
+            "Long Stalled",
+            state="stalledDL",
+            category="lidarr",
+            amount_left=350 * 1024**2,
+            progress=0.1,
+            num_seeds=1,
+            availability=1.1,
+            added_on=orch.now_ts() - 10_000,
+            completion_on=-1,
+            last_activity=orch.now_ts() - 10_000,
+        )
+        grabbed = {"eventType": "grabbed", "date": "2026-03-28T00:00:00Z", "albumId": 9}
+        report = orch.build_orphan_report(
+            [torrent],
+            {"recover-stalled": {"apps": {"lidarr": {"latestGrabbed": grabbed, "latestImported": None, "records": [grabbed]}}}},
+            arr_collector,
+            {"recover-stalled": {"stalledSeconds": 7200, "probeStalled": True, "longStalled": True}},
+        )
+        self.assertEqual(len(report["brokenSuspects"]), 1)
+        actions = report["brokenSuspects"][0]["recommendedActions"]
+        action_types = [action["type"] for action in actions]
+        self.assertEqual(report["brokenSuspects"][0]["recoveryMode"], "salvage")
+        self.assertIn("qbit-reannounce", action_types)
+        self.assertIn("qbit-soft-reset", action_types)
+        self.assertIn("arr-search-command", action_types)
+
+    def test_probe_stalled_torrent_enters_broken_recovery_lane_before_long_stall(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        torrent = make_torrent(
+            "recover-probe-stalled",
+            "Probe Stalled",
+            state="stalledDL",
+            category="lidarr",
+            amount_left=350 * 1024**2,
+            progress=0.1,
+            num_seeds=1,
+            availability=1.1,
+            added_on=orch.now_ts() - 10_000,
+            completion_on=-1,
+            last_activity=orch.now_ts() - 10_000,
+        )
+        grabbed = {"eventType": "grabbed", "date": "2026-03-28T00:00:00Z", "albumId": 9}
+        report = orch.build_orphan_report(
+            [torrent],
+            {"recover-probe-stalled": {"apps": {"lidarr": {"latestGrabbed": grabbed, "latestImported": None, "records": [grabbed]}}}},
+            arr_collector,
+            {"recover-probe-stalled": {"stalledSeconds": 400, "probeStalled": True, "longStalled": False}},
+        )
+        self.assertEqual(len(report["brokenSuspects"]), 1)
+        self.assertEqual(report["brokenSuspects"][0]["brokenReason"], "stalled-no-progress")
+        self.assertEqual(report["brokenSuspects"][0]["recoveryMode"], "salvage")
 
     def test_imported_media_is_not_requeued(self) -> None:
         arr_collector = orch.ArrHistoryCollector()
@@ -705,6 +925,54 @@ class OrchestratorScenarioTests(unittest.TestCase):
         self.assertEqual(candidates[0]["reason"], "wanted-missing-stale")
         self.assertEqual(candidates[0]["recommendedAction"]["command"], "MoviesSearch")
 
+    def test_sonarr_wanted_stale_backlog_candidate_detected(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        candidates = orch.build_backlog_candidates(
+            [],
+            {},
+            {"sonarr": []},
+            {
+                "sonarr": [
+                    {
+                        "id": 3830,
+                        "title": "#466",
+                        "monitored": True,
+                        "hasFile": False,
+                        "airDateUtc": "2026-03-20T01:00:00Z",
+                        "lastSearchTime": "2026-03-20T02:00:00Z",
+                    }
+                ]
+            },
+            arr_collector,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["reason"], "wanted-missing-stale")
+        self.assertEqual(candidates[0]["recommendedAction"]["command"], "EpisodeSearch")
+
+    def test_lidarr_wanted_stale_backlog_candidate_detected(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        candidates = orch.build_backlog_candidates(
+            [],
+            {},
+            {"lidarr": []},
+            {
+                "lidarr": [
+                    {
+                        "id": 6,
+                        "title": "Goodbye & Good Riddance",
+                        "monitored": True,
+                        "releaseDate": "2026-03-10T00:00:00Z",
+                        "lastSearchTime": "2026-03-20T00:00:00Z",
+                        "statistics": {"trackFileCount": 0, "trackCount": 20},
+                    }
+                ]
+            },
+            arr_collector,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["reason"], "wanted-missing-stale")
+        self.assertEqual(candidates[0]["recommendedAction"]["command"], "AlbumSearch")
+
     def test_arr_recovery_budget_and_cooldown(self) -> None:
         original_observe = orch.CONFIG.observe_only
         original_allow_arr = orch.CONFIG.allow_arr_commands
@@ -769,17 +1037,17 @@ class OrchestratorScenarioTests(unittest.TestCase):
                 ],
             }
             store = FakeStore()
-            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, report)
+            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, FakeQBClient(), report)
             self.assertEqual(len(dispatch["triggered"]), 1)
             self.assertEqual(len(seen_actions), 1)
             self.assertIn("arr_last_command_at", store.runtime)
 
-            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, report)
+            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, FakeQBClient(), report)
             self.assertTrue(any(item["reason"] == "global-cooldown" for item in dispatch["skipped"]))
 
             store.runtime["arr_last_command_at"] = orch.now_ts() - 4000
             report["retroRepairCandidates"] = []
-            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, report)
+            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, FakeQBClient(), report)
             self.assertTrue(any(item["reason"] == "retry-limit" for item in dispatch["skipped"]))
         finally:
             object.__setattr__(orch.CONFIG, "observe_only", original_observe)
@@ -815,12 +1083,14 @@ class OrchestratorScenarioTests(unittest.TestCase):
                         "name": "Recover A",
                         "referenceTs": orch.now_ts() - 7200,
                         "recoveryMode": "salvage",
+                        "recommendedActions": [{"type": "qbit-recheck"}, {"type": "qbit-reannounce"}],
                     },
                     {
                         "hash": "recover-b",
                         "name": "Recover B",
                         "referenceTs": orch.now_ts() - 7100,
                         "recoveryMode": "salvage",
+                        "recommendedActions": [{"type": "qbit-recheck"}, {"type": "qbit-reannounce"}],
                     },
                 ]
             }
@@ -839,6 +1109,77 @@ class OrchestratorScenarioTests(unittest.TestCase):
             object.__setattr__(orch.CONFIG, "max_qbit_recovery_actions_per_cycle", original_budget)
             object.__setattr__(orch.CONFIG, "min_qbit_recovery_interval_seconds", original_cooldown)
             object.__setattr__(orch.CONFIG, "max_qbit_recovery_attempts_per_hash", original_retries)
+
+    def test_qbit_stalled_salvage_soft_resets(self) -> None:
+        original_observe = orch.CONFIG.observe_only
+        original_recovery = orch.CONFIG.allow_broken_download_recovery
+        original_qbit_recovery = orch.CONFIG.allow_qbit_recovery_actions
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_broken_download_recovery", True)
+            object.__setattr__(orch.CONFIG, "allow_qbit_recovery_actions", True)
+            store = FakeStore()
+            client = FakeQBClient()
+            report = {
+                "brokenSuspects": [
+                    {
+                        "hash": "recover-stalled",
+                        "name": "Recover Stalled",
+                        "referenceTs": orch.now_ts() - 7200,
+                        "recoveryMode": "salvage",
+                        "recommendedActions": [{"type": "qbit-reannounce"}, {"type": "qbit-soft-reset"}],
+                    }
+                ]
+            }
+            dispatch = orch.maybe_apply_qbit_recovery(store, client, report)
+            self.assertEqual(len(dispatch["triggered"]), 1)
+            self.assertEqual(client.reannounced, [["recover-stalled"]])
+            self.assertEqual(client.stopped, [["recover-stalled"]])
+            self.assertEqual(client.started, [["recover-stalled"]])
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_broken_download_recovery", original_recovery)
+            object.__setattr__(orch.CONFIG, "allow_qbit_recovery_actions", original_qbit_recovery)
+
+    def test_arr_recovery_deletes_broken_torrent_before_requeue(self) -> None:
+        original_observe = orch.CONFIG.observe_only
+        original_allow_arr = orch.CONFIG.allow_arr_commands
+        original_allow_recovery = orch.CONFIG.allow_broken_download_recovery
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", True)
+            object.__setattr__(orch.CONFIG, "allow_broken_download_recovery", True)
+            arr_collector = orch.ArrHistoryCollector()
+            arr_collector.run_search_action = lambda app, action: {"id": 7, "name": action["command"]}  # type: ignore[method-assign]
+            store = FakeStore()
+            client = FakeQBClient()
+            report = {
+                "brokenSuspects": [
+                    {
+                        "hash": "recover-delete",
+                        "name": "Recover Delete",
+                        "app": "radarr",
+                        "lane": "broken-recovery",
+                        "priority": 5,
+                        "referenceTs": orch.now_ts() - 7200,
+                        "recoveryMode": "replace",
+                        "recommendedActions": [
+                            {"type": "qbit-delete", "deleteFiles": False},
+                            orch.build_arr_search_action_for_entity("radarr", 404, arr_collector),
+                        ],
+                    }
+                ],
+                "suspects": [],
+                "retroRepairCandidates": [],
+                "backlogCandidates": [],
+            }
+            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, client, report)
+            self.assertEqual(len(dispatch["triggered"]), 1)
+            self.assertEqual(client.deleted, [{"hashes": ["recover-delete"], "deleteFiles": False}])
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", original_allow_arr)
+            object.__setattr__(orch.CONFIG, "allow_broken_download_recovery", original_allow_recovery)
 
 
 if __name__ == "__main__":

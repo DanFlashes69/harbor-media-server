@@ -389,6 +389,8 @@ The repo now includes an optional `download-orchestrator` service behind the `ex
 Its job is to:
 - keep qB focused on the healthiest and most finishable torrents for the current free-space budget
 - dynamically narrow or widen qB's active queue window
+- rotate away from weak or non-moving swarms before they monopolize the active slot
+- quarantine rotated probes briefly so the controller does not bounce straight back onto the same dead swarm
 - apply a reviewed safe set of qB speed/performance preferences
 - detect broken `missingFiles` cases and prefer qB salvage before any replacement search
 - issue tightly bounded Arr retry/search commands for high-confidence queue/import failures

@@ -13,7 +13,7 @@ Use this alongside [SETUP.md](SETUP.md) when you want the full "what does this s
 | qBittorrent | Torrent download client | WebUI login bootstrap, safe defaults, `tun0` binding, `/downloads` paths, categories, Arr/Prowlarr wiring | Real qB credentials in `.env`; optional UI tuning if you want different behavior |
 | SABnzbd | Usenet download client | Container, paths, categories, Homepage tile, optional provider bootstrap from `.env` | Real Usenet provider, real NZB indexers, optional retention/server tuning |
 | port-updater | Syncs qB's listen port to the forwarded VPN port | Full container setup, Gluetun port-file mount, qB auth from `.env`, healthcheck | Valid qB credentials in `.env` |
-| download-orchestrator | Keeps qB focused on finishable, healthy downloads and handles bounded repair/retry logic | Optional compose service, state directory, qB/Arr awareness, non-interference guardrails | Decide whether to run the `experimental` profile |
+| download-orchestrator | Keeps qB focused on finishable, healthy downloads, rotates away from dead swarms, and handles bounded repair/retry logic | Optional compose service, state directory, qB/Arr awareness, non-interference guardrails | Decide whether to run the `experimental` profile |
 
 ## Indexing, requests, and automation
 

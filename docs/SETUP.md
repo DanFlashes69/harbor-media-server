@@ -104,7 +104,7 @@ It currently:
 | Portainer | Container launch | No | First admin login |
 | autoheal | Container launch | No | None |
 | Watchtower | Container launch | No | Monitor-only by default; Harbor safe-update scripts decide when updates are applied |
-| download-orchestrator | Optional container launch behind the experimental profile | No | Choose whether to run the orchestrator profile at all |
+| download-orchestrator | Optional container launch behind the experimental profile, including active-swarm rotation and bounded repair logic | No | Choose whether to run the orchestrator profile at all |
 
 ## Safe update automation
 
