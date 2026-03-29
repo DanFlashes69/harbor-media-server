@@ -7,7 +7,8 @@
 param(
     [switch]$SkipPreflightChecks = $false,
     [switch]$SkipPortScan = $false,
-    [switch]$NoLaunch = $false
+    [switch]$NoLaunch = $false,
+    [switch]$NoBootstrap = $false
 )
 
 $ErrorActionPreference = 'Stop'
@@ -274,6 +275,7 @@ function Write-EnvFile {
 
 DOCKER_ROOT=$($Values.DockerRoot)
 DATA_ROOT=$($Values.DataRoot)
+SERVER_HOST=$($Values.ServerHost)
 TIMEZONE=$($Values.Timezone)
 VPN_USERNAME=$($Values.VpnUsername)
 VPN_PASSWORD=$($Values.VpnPassword)
@@ -347,13 +349,14 @@ function Show-Summary {
     Write-Host "Environment file: $EnvPath"
     Write-Host "DOCKER_ROOT:      $($Values.DockerRoot)"
     Write-Host "DATA_ROOT:        $($Values.DataRoot)"
+    Write-Host "SERVER_HOST:      $($Values.ServerHost)"
     Write-Host ''
     Write-Host 'Important next steps:' -ForegroundColor Cyan
     Write-Host '  1. Put your OpenVPN config at DOCKER_ROOT\gluetun\custom.ovpn'
     Write-Host '  2. Start the stack from the repository root with docker compose up -d --build'
-    Write-Host '  3. Finish first-run app setup in qBittorrent, Plex, Prowlarr, Radarr, Sonarr, Lidarr, and Overseerr'
-    Write-Host '  4. Replace placeholder API keys and widget credentials only in local runtime config and .env, never in tracked files'
-    Write-Host '  5. Review README.md for the current post-install checklist, self-healing features, and backup helper scripts'
+    Write-Host '  3. Run scripts\bootstrap-media-stack.ps1 to wire qBittorrent, SABnzbd, Prowlarr, the Arr apps, Recyclarr, and Homepage'
+    Write-Host '  4. Finish the remaining UI-only setup steps in Plex, Overseerr, Cloudflare, and any private indexers or Usenet providers'
+    Write-Host '  5. Review docs\SETUP.md for the full setup flow, docs\SERVICE-SETUP.md for the service reference, and docs\AI-SETUP.md if you want an autonomous agent to finish the rest'
 }
 
 Clear-Host
@@ -371,6 +374,7 @@ if (-not $SkipPreflightChecks) {
     Write-Host '  - Immich DB password'
     Write-Host '  - qBittorrent credentials for the port-updater'
     Write-Host '  - Plex LAN advertise URL such as http://192.168.1.100:32400/'
+    Write-Host '  - Optional server hostname or LAN IP for generated Homepage links'
     if (-not (Confirm-Step 'Continue')) {
         exit 0
     }
@@ -386,6 +390,7 @@ if (-not (Scan-Ports)) {
 
 $dockerRoot = Read-Default 'DOCKER_ROOT' 'D:\docker'
 $dataRoot = Read-Default 'DATA_ROOT' 'D:\NAS'
+$serverHost = Read-Default 'Server host for generated Homepage links' 'localhost'
 $timezone = Read-Default 'Timezone' 'America/Los_Angeles'
 $vpnUsername = Read-Default 'VPN username' 'your_vpn_username_here'
 $vpnPassword = Read-Default 'VPN password' 'your_vpn_password_here'
@@ -398,6 +403,7 @@ $plexAdvertiseIp = Read-Default 'Plex advertise URL' 'http://192.168.1.100:32400
 $values = @{
     DockerRoot      = $dockerRoot.TrimEnd('\')
     DataRoot        = $dataRoot.TrimEnd('\')
+    ServerHost      = $serverHost
     Timezone        = $timezone
     VpnUsername     = $vpnUsername
     VpnPassword     = $vpnPassword
@@ -418,6 +424,10 @@ Show-Summary -Values $values
 
 if (-not $NoLaunch -and (Confirm-Step 'Start Docker Compose now')) {
     Start-Stack
+
+    if (-not $NoBootstrap -and (Confirm-Step 'Run the post-launch bootstrap now')) {
+        & (Join-Path $RepoRoot 'scripts\bootstrap-media-stack.ps1')
+    }
 }
 
 Write-Good 'Setup complete.'

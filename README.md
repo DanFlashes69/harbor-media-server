@@ -62,6 +62,7 @@ Run Docker Compose from the repository root. Do not copy `docker-compose.yml` in
 repo-root/
 |-- .env.example
 |-- docker-compose.yml
+|-- docs/
 |-- download-orchestrator/
 |-- gluetun-namespace-guard/
 |-- setup.ps1
@@ -164,6 +165,19 @@ Important values:
 | `SONARR_API_KEY` | Optional for Unpackerr/Recyclarr after first launch |
 | `LIDARR_API_KEY` | Optional for Unpackerr after first launch |
 
+## Setup paths
+
+Harbor supports two recommended install paths:
+
+- Standard automated setup: run `setup.ps1`, launch the stack, then run `scripts/bootstrap-media-stack.ps1`.
+- AI-assisted setup: use the same scripts, but hand the repo to an autonomous agent for the remaining browser-only or account-linked work.
+
+If you want the full step-by-step version instead of the summary in this README, use:
+
+- [docs/SETUP.md](docs/SETUP.md) for the complete install flow
+- [docs/SERVICE-SETUP.md](docs/SERVICE-SETUP.md) for a service-by-service setup reference
+- [docs/AI-SETUP.md](docs/AI-SETUP.md) for Codex, Claude, and generic autonomous-agent setup prompts
+
 ## Quick start
 
 1. Clone the repo.
@@ -185,13 +199,19 @@ cd harbor-media-server
 DOCKER_ROOT\gluetun\custom.ovpn
 ```
 
-4. Start the stack from the repository root.
+4. Start the stack from the repository root if `setup.ps1` did not already launch it for you.
 
 ```powershell
 docker compose up -d --build
 ```
 
-The setup helper also creates the named Docker volumes used by the SQLite-heavy services before first launch:
+5. Run the post-launch bootstrap if `setup.ps1` did not already run it for you.
+
+```powershell
+.\scripts\bootstrap-media-stack.ps1
+```
+
+The setup helper creates the named Docker volumes used by the SQLite-heavy services before first launch:
 
 - `radarr_config`
 - `sonarr_config`
@@ -199,39 +219,29 @@ The setup helper also creates the named Docker volumes used by the SQLite-heavy 
 - `bazarr_config`
 - `prowlarr_config`
 
-## First launch checklist
+The bootstrap script then handles the first round of service-to-service wiring for qBittorrent, SABnzbd, Radarr, Sonarr, Lidarr, Prowlarr, Recyclarr, and the runtime Homepage config.
 
-After the containers are up, use this order so the integrations line up with the current stack.
+## Post-bootstrap tasks
 
-1. Log into qBittorrent and set your permanent WebUI username/password.
-2. In qBittorrent, set:
-   - save path: `/downloads`
-   - incomplete path: `/downloads/incomplete`
-   - network interface: `tun0`
-   - disable random port on startup
-   - disable UPnP / NAT-PMP
-3. In SABnzbd, set:
-   - incomplete folder: `/downloads/usenet/incomplete`
-   - complete folder: `/downloads/usenet/complete`
-   - leave it idle until you have a Usenet provider and at least one NZB indexer
-4. In Prowlarr, add:
-   - qBittorrent download client at `http://gluetun:8081`
-   - Radarr app at `http://radarr:7878`
-   - Sonarr app at `http://sonarr:8989`
-   - Lidarr app at `http://lidarr:8686`
-   - FlareSolverr proxy at `http://flaresolverr:8191`
-   - optional NZB indexers later if you want SABnzbd to be used for Usenet
-5. In Radarr, Sonarr, and Lidarr, add qBittorrent using host `gluetun` and port `8081`.
-6. If you want Usenet in the same apps, add SABnzbd using host `gluetun` and port `8080`.
-7. In Overseerr, connect:
-   - Plex at `http://plex:32400`
-   - Radarr at `http://radarr:7878`
-   - Sonarr at `http://sonarr:8989`
-8. In Plex, create libraries from:
-   - `/media/movies`
-   - `/media/tv`
-   - `/media/music`
-   - `/media/photos`
+These are the remaining setup steps that are intentionally left to a human operator or a browser-capable autonomous agent:
+
+1. Complete first-time Plex login or claim, then confirm the libraries for `/media/movies`, `/media/tv`, `/media/music`, and `/media/photos`.
+2. Complete first-time Overseerr admin setup and connect it to Plex, Radarr, and Sonarr.
+3. Add private trackers or authenticated indexers in Prowlarr if you use them.
+4. Add a real Usenet provider and at least one NZB indexer if you want SABnzbd to download real jobs.
+5. Finish any Cloudflare Tunnel or classic router-based remote-access setup you want for Plex.
+6. Add optional token-based Homepage widgets such as Plex, Immich, Portainer, or Overseerr if you want deeper dashboard integration.
+
+## What the setup flow automates
+
+The Harbor setup path is split into two automation stages.
+
+| Stage | What it configures automatically | What it intentionally leaves to you |
+|---|---|---|
+| `setup.ps1` | Preflight checks, port scan, `.env` generation, runtime directories, named Docker volumes, runtime template copies, optional stack launch | Real VPN profile file, user-specific account choices, browser-only onboarding |
+| `scripts/bootstrap-media-stack.ps1` | qBittorrent login and safe defaults, SABnzbd runtime defaults, Arr root folders, qB and SAB clients in Arr/Prowlarr, Prowlarr app links, FlareSolverr proxy, optional public indexer pack, runtime Recyclarr keys, runtime Homepage services file | Plex claim, Overseerr first admin, private/authenticated indexers, Usenet provider details, Cloudflare domain/token work, token-only Homepage widgets |
+
+That means a normal install can get very close to the live Harbor state before any manual clicking is required. The remaining manual work is mostly account-linked setup, not basic stack wiring.
 
 ## Current integration defaults
 
@@ -282,17 +292,18 @@ The live stack also uses reject terms such as:
 
 ## What setup.ps1 does
 
-The setup helper now assumes this repository is the Compose project root.
+The setup helper assumes this repository is the Docker Compose project root.
 
 It will:
-- check Docker/Git prerequisites
+- check Docker and Git prerequisites
 - scan the required ports
-- collect `DOCKER_ROOT`, `DATA_ROOT`, timezone, qB, Pi-hole, Immich, and Plex advertise values
+- collect `DOCKER_ROOT`, `DATA_ROOT`, `SERVER_HOST`, timezone, qB, Pi-hole, Immich, and Plex advertise values
 - create runtime directories under `DOCKER_ROOT` and `DATA_ROOT`
 - create the named Docker volumes used by the SQLite-heavy media apps
 - seed Homepage and Recyclarr template files into `DOCKER_ROOT`
 - generate `.env` in the repository root
 - optionally start the stack from the repository root
+- optionally launch `scripts/bootstrap-media-stack.ps1` immediately after the containers come up
 
 ## Core architecture notes
 
@@ -440,6 +451,8 @@ That change exists to reduce recurring SQLite lock/corruption issues under susta
 The old bind-mounted config folders can still exist on disk as migration/backup safety copies, but the live containers read and write through the named volumes listed in the runtime layout above.
 
 ## Service-specific setup notes
+
+For a service-by-service view of what Harbor auto-configures and what still needs user input, see [docs/SERVICE-SETUP.md](docs/SERVICE-SETUP.md).
 
 ### qBittorrent
 
