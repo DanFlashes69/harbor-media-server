@@ -546,6 +546,7 @@ services:
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_SCHEDULE=0 0 4 * * *
       - WATCHTOWER_INCLUDE_STOPPED=true
+      - WATCHTOWER_MONITOR_ONLY=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
@@ -579,6 +580,23 @@ services:
       timeout: 10s
       retries: 5
       start_period: 45s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  update-status:
+    image: nginx:alpine
+    container_name: update-status
+    ports:
+      - "8099:80"
+    volumes:
+      - ${DOCKER_ROOT}/update-guardian/status:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/index.html >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
     labels:
       - autoheal=true
     restart: unless-stopped

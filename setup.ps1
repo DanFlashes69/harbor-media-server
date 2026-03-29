@@ -8,7 +8,8 @@ param(
     [switch]$SkipPreflightChecks = $false,
     [switch]$SkipPortScan = $false,
     [switch]$NoLaunch = $false,
-    [switch]$NoBootstrap = $false
+    [switch]$NoBootstrap = $false,
+    [switch]$NoUpdateTask = $false
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +34,7 @@ $RequiredPorts = [ordered]@{
     8686  = 'Lidarr'
     8989  = 'Sonarr'
     9000  = 'Portainer'
+    8099  = 'Update status page'
     9696  = 'Prowlarr'
     32400 = 'Plex'
 }
@@ -52,6 +54,7 @@ $DockerDirectories = @(
     'immich\model-cache',
     'immich\postgres',
     'homepage\config',
+    'update-guardian\status',
     'portainer\data',
     'recyclarr\config',
     'pihole\etc-pihole',
@@ -226,6 +229,60 @@ function Seed-Templates {
     }
 }
 
+function Write-UpdateStatusPlaceholder {
+    param(
+        [string]$DockerRoot
+    )
+
+    $statusRoot = Join-Path $DockerRoot 'update-guardian\status'
+    $indexPath = Join-Path $statusRoot 'index.html'
+    $jsonPath = Join-Path $statusRoot 'status.json'
+
+    New-Item -ItemType Directory -Force -Path $statusRoot | Out-Null
+
+    if (-not (Test-Path $indexPath)) {
+        $html = @"
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Harbor Update Status</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { background:#0f172a; color:#e5e7eb; font-family:Segoe UI, Arial, sans-serif; margin:0; padding:32px; }
+    .card { max-width:840px; margin:0 auto; background:#111827; border:1px solid #1f2937; border-radius:16px; padding:24px; }
+    h1 { margin-top:0; color:#f8fafc; }
+    p { line-height:1.6; }
+    code { color:#93c5fd; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Harbor Update Status</h1>
+    <p>No update scan has been run yet.</p>
+    <p>Run <code>scripts\safe-update-media-stack.ps1</code> or install the scheduled task to generate the live update report.</p>
+  </div>
+</body>
+</html>
+"@
+        Set-Content -Path $indexPath -Value $html -Encoding UTF8
+    }
+
+    if (-not (Test-Path $jsonPath)) {
+        $payload = @{
+            generatedAt = (Get-Date).ToString('o')
+            status = 'not-run'
+            summary = 'No safe update scan has been run yet.'
+            updated = @()
+            deferred = @()
+            blocked = @()
+            manual = @()
+            appWarnings = @()
+        } | ConvertTo-Json -Depth 6
+        Set-Content -Path $jsonPath -Value $payload -Encoding UTF8
+    }
+}
+
 function New-Directories {
     param(
         [string]$DockerRoot,
@@ -284,6 +341,17 @@ QBIT_PASS=$($Values.QbitPass)
 PIHOLE_PASSWORD=$($Values.PiholePassword)
 IMMICH_DB_PASSWORD=$($Values.ImmichDbPassword)
 PLEX_ADVERTISE_IP=$($Values.PlexAdvertiseIp)
+CLOUDFLARE_TUNNEL_TOKEN=
+SAB_SERVER_NAME=PrimaryUsenet
+SAB_SERVER_HOST=
+SAB_SERVER_PORT=563
+SAB_SERVER_USERNAME=
+SAB_SERVER_PASSWORD=
+SAB_SERVER_SSL=true
+SAB_SERVER_CONNECTIONS=20
+PROWLARR_NEWZNAB_NAME=Primary Newznab
+PROWLARR_NEWZNAB_URL=
+PROWLARR_NEWZNAB_API_KEY=
 RADARR_API_KEY=
 SONARR_API_KEY=
 LIDARR_API_KEY=
@@ -355,8 +423,9 @@ function Show-Summary {
     Write-Host '  1. Put your OpenVPN config at DOCKER_ROOT\gluetun\custom.ovpn'
     Write-Host '  2. Start the stack from the repository root with docker compose up -d --build'
     Write-Host '  3. Run scripts\bootstrap-media-stack.ps1 to wire qBittorrent, SABnzbd, Prowlarr, the Arr apps, Recyclarr, and Homepage'
-    Write-Host '  4. Finish the remaining UI-only setup steps in Plex, Overseerr, Cloudflare, and any private indexers or Usenet providers'
-    Write-Host '  5. Review docs\SETUP.md for the full setup flow, docs\SERVICE-SETUP.md for the service reference, and docs\AI-SETUP.md if you want an autonomous agent to finish the rest'
+    Write-Host '  4. Run scripts\safe-update-media-stack.ps1 -Preview or install the scheduled safe-update task'
+    Write-Host '  5. Finish the remaining UI-only setup steps in Plex, Overseerr, Cloudflare, and any private indexers or Usenet providers'
+    Write-Host '  6. Review docs\SETUP.md for the full setup flow, docs\SERVICE-SETUP.md for the service reference, and docs\AI-SETUP.md if you want an autonomous agent to finish the rest'
 }
 
 Clear-Host
@@ -403,7 +472,7 @@ $plexAdvertiseIp = Read-Default 'Plex advertise URL' 'http://192.168.1.100:32400
 $values = @{
     DockerRoot      = $dockerRoot.TrimEnd('\')
     DataRoot        = $dataRoot.TrimEnd('\')
-    ServerHost      = $serverHost
+    ServerHost      = $(if ([string]::IsNullOrWhiteSpace($serverHost)) { 'localhost' } else { $serverHost })
     Timezone        = $timezone
     VpnUsername     = $vpnUsername
     VpnPassword     = $vpnPassword
@@ -417,16 +486,26 @@ $values = @{
 New-Directories -DockerRoot $values.DockerRoot -DataRoot $values.DataRoot
 Ensure-NamedVolumes
 Seed-Templates -DockerRoot $values.DockerRoot
+Write-UpdateStatusPlaceholder -DockerRoot $values.DockerRoot
 Write-EnvFile -Values $values
 Test-VpnFile -DockerRoot $values.DockerRoot | Out-Null
 Test-NativeQbittorrent
 Show-Summary -Values $values
+
+if (-not $NoUpdateTask -and (Confirm-Step 'Install the daily Harbor safe update task now')) {
+    & (Join-Path $RepoRoot 'scripts\install-update-task.ps1')
+    Write-Good 'Installed the Harbor safe update scheduled task.'
+}
 
 if (-not $NoLaunch -and (Confirm-Step 'Start Docker Compose now')) {
     Start-Stack
 
     if (-not $NoBootstrap -and (Confirm-Step 'Run the post-launch bootstrap now')) {
         & (Join-Path $RepoRoot 'scripts\bootstrap-media-stack.ps1')
+    }
+
+    if (-not $NoUpdateTask -and (Confirm-Step 'Run a safe-update preview now to seed the status page')) {
+        & (Join-Path $RepoRoot 'scripts\safe-update-media-stack.ps1') -Preview
     }
 }
 

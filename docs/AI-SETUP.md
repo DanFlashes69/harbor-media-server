@@ -2,10 +2,11 @@
 
 Use this guide when you want an autonomous agent to take Harbor from a fresh clone to a mostly configured stack with as little manual interaction as possible.
 
-Harbor already includes two automation layers:
+Harbor already includes three automation layers:
 
 1. [`setup.ps1`](../setup.ps1) for prerequisites, folders, volumes, and `.env`
 2. [`scripts/bootstrap-media-stack.ps1`](../scripts/bootstrap-media-stack.ps1) for qBittorrent, SABnzbd, Prowlarr, the Arr apps, Recyclarr, and Homepage
+3. [`scripts/safe-update-media-stack.ps1`](../scripts/safe-update-media-stack.ps1) for guarded update decisions and the update status page
 
 The AI-assisted flow exists to drive those scripts, handle the remaining validation work, and optionally finish browser-only setup tasks such as Plex, Overseerr, Prowlarr, SABnzbd, or Cloudflare if your agent has browser access and you are comfortable providing the required credentials locally.
 
@@ -25,6 +26,7 @@ The smoother the run, the more of these details you provide at the start:
 - Plex advertise URL
 - whether you want Cloudflare Tunnel for Plex
 - whether you want SABnzbd enabled for real Usenet downloads now
+- whether you want the daily safe-update scheduled task installed
 - whether you want the orchestrator profile enabled
 - whether you want public starter Prowlarr indexers seeded
 
@@ -46,9 +48,11 @@ In the best-case path, the agent should:
 3. confirm the OpenVPN profile is present
 4. launch the stack
 5. run `scripts/bootstrap-media-stack.ps1`
-6. validate container health, service endpoints, and recent logs
-7. if browser access is available, finish the remaining UI-only setup steps
-8. re-run validation and report anything still manual or blocked
+6. run `scripts/install-update-task.ps1` unless the user explicitly does not want the scheduled task
+7. run `scripts/safe-update-media-stack.ps1 -Preview` so the status page is seeded
+8. validate container health, service endpoints, recent logs, and the safe-update status page
+9. if browser access is available, finish the remaining UI-only setup steps
+10. re-run validation and report anything still manual or blocked
 
 ## What the agent should never do
 
@@ -78,8 +82,10 @@ Your goals are:
 6. Run scripts\\bootstrap-media-stack.ps1 unless there is a concrete blocker.
 7. Verify qBittorrent, SABnzbd, Prowlarr, Radarr, Sonarr, Lidarr, Homepage, Plex, Pi-hole, Tdarr, and Gluetun health and endpoint reachability.
 8. Verify qBittorrent is still bound to tun0 and that Harbor's safe defaults remain intact.
-9. If browser-only tasks remain, give me a short exact checklist in the right order instead of guessing.
-10. If you see configuration drift, fix only what Harbor documents as safe to automate.
+9. Install the Harbor safe-update scheduled task unless I tell you not to.
+10. Run scripts\\safe-update-media-stack.ps1 -Preview and verify the update status page at http://localhost:8099.
+11. If browser-only tasks remain, give me a short exact checklist in the right order instead of guessing.
+12. If you see configuration drift, fix only what Harbor documents as safe to automate.
 
 Do not:
 - change VPN provider settings or Gluetun killswitch behavior
@@ -109,9 +115,11 @@ Your priorities are:
 3. Start the stack with docker compose up -d --build.
 4. Run scripts\\bootstrap-media-stack.ps1.
 5. Validate the main Harbor services and fix any safe-to-fix integration issues.
-6. In the browser, complete first-time Plex, Overseerr, Prowlarr, SABnzbd, and Cloudflare steps if I provide the necessary credentials or tokens.
-7. Do not change Harbor's guarded infrastructure choices such as the Gluetun kill-switch, qBittorrent bind interface, qBittorrent categories, or Harbor's protected service wiring.
-8. Keep secrets only in local runtime config and .env. Do not commit or print them in a way that would be unsafe to publish.
+6. Install the Harbor safe-update scheduled task unless I tell you not to.
+7. Run scripts\\safe-update-media-stack.ps1 -Preview and verify the update status page at http://localhost:8099.
+8. In the browser, complete first-time Plex, Overseerr, Prowlarr, SABnzbd, and Cloudflare steps if I provide the necessary credentials or tokens.
+9. Do not change Harbor's guarded infrastructure choices such as the Gluetun kill-switch, qBittorrent bind interface, qBittorrent categories, or Harbor's protected service wiring.
+10. Keep secrets only in local runtime config and .env. Do not commit or print them in a way that would be unsafe to publish.
 
 Browser-only tasks you may complete if I provide what you need:
 - Plex claim/login and library confirmation
@@ -147,8 +155,10 @@ Then:
 2. Verify .env and the OpenVPN profile.
 3. Start the stack with docker compose up -d --build.
 4. Run scripts/bootstrap-media-stack.ps1.
-5. Validate health, connectivity, and the main service integrations.
-6. Complete any browser-only setup only if you have access and the required credentials are provided locally.
+5. Install scripts/install-update-task.ps1 unless the user says not to.
+6. Run scripts/safe-update-media-stack.ps1 -Preview and verify http://localhost:8099.
+7. Validate health, connectivity, and the main service integrations.
+8. Complete any browser-only setup only if you have access and the required credentials are provided locally.
 
 Guardrails:
 - do not commit secrets
@@ -183,6 +193,7 @@ When the agent says Harbor is configured, it should verify at minimum:
 - Sonarr reachable
 - Lidarr reachable
 - Homepage reachable
+- update status page reachable
 - Plex reachable locally
 - Pi-hole API reachable
 - Gluetun healthy

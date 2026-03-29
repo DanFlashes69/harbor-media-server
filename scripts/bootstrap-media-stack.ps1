@@ -154,6 +154,25 @@ function Invoke-ServarrApi {
     return Invoke-RestMethod -Method $Method -Headers $headers -Uri $uri -ContentType 'application/json' -Body $json -TimeoutSec 30
 }
 
+function Invoke-SabApi {
+    param(
+        [string]$ApiKey,
+        [hashtable]$Parameters
+    )
+
+    $query = [System.Web.HttpUtility]::ParseQueryString([string]::Empty)
+    $query['output'] = 'json'
+    $query['apikey'] = $ApiKey
+
+    foreach ($key in $Parameters.Keys) {
+        if ($null -eq $Parameters[$key]) { continue }
+        $query[$key] = [string]$Parameters[$key]
+    }
+
+    $uri = 'http://127.0.0.1:8082/api?' + $query.ToString()
+    return Invoke-RestMethod -Method Get -Uri $uri -TimeoutSec 30
+}
+
 function Set-FieldValue {
     param(
         [object]$Field,
@@ -400,6 +419,48 @@ function Ensure-ProwlarrIndexer {
     Write-Good "Created Prowlarr indexer: $DefinitionName"
 }
 
+function Ensure-ProwlarrNamedIndexer {
+    param(
+        [string]$Name,
+        [string]$DefinitionName,
+        [int]$Priority,
+        [bool]$Enabled,
+        [int]$AppProfileId,
+        [int[]]$Tags,
+        [hashtable]$FieldOverrides,
+        [string]$BaseUrl,
+        [string]$ApiKey
+    )
+
+    $existing = @(Invoke-ServarrApi -Method Get -BaseUrl $BaseUrl -Path '/api/v1/indexer' -ApiKey $ApiKey)
+    if ($existing | Where-Object { $_.name -eq $Name }) {
+        Write-Info "Prowlarr indexer already exists: $Name"
+        return
+    }
+
+    $schema = @(Invoke-ServarrApi -Method Get -BaseUrl $BaseUrl -Path '/api/v1/indexer/schema' -ApiKey $ApiKey)
+    $template = $schema | Where-Object { $_.definitionName -eq $DefinitionName } | Select-Object -First 1
+    if (-not $template) {
+        throw "Could not find Prowlarr indexer schema for '$DefinitionName'"
+    }
+
+    $payload = $template | Get-JsonClone
+    $payload.name = $Name
+    $payload.enable = $Enabled
+    $payload.priority = $Priority
+    $payload.appProfileId = $AppProfileId
+    $payload.tags = @($Tags)
+
+    foreach ($field in $payload.fields) {
+        if ($FieldOverrides.ContainsKey($field.name)) {
+            Set-FieldValue -Field $field -Value $FieldOverrides[$field.name]
+        }
+    }
+
+    Invoke-ServarrApi -Method Post -BaseUrl $BaseUrl -Path '/api/v1/indexer' -ApiKey $ApiKey -Body $payload | Out-Null
+    Write-Good "Created Prowlarr indexer: $Name"
+}
+
 function Try-QbLogin {
     param(
         [string]$Username,
@@ -574,6 +635,57 @@ function Configure-Qbittorrent {
     }
 }
 
+function Get-UsenetAutomationFlags {
+    param([hashtable]$EnvValues)
+
+    $hasSabServer = -not [string]::IsNullOrWhiteSpace($EnvValues.SAB_SERVER_HOST) -and
+        -not [string]::IsNullOrWhiteSpace($EnvValues.SAB_SERVER_USERNAME) -and
+        -not [string]::IsNullOrWhiteSpace($EnvValues.SAB_SERVER_PASSWORD)
+
+    $hasNewznab = -not [string]::IsNullOrWhiteSpace($EnvValues.PROWLARR_NEWZNAB_URL) -and
+        -not [string]::IsNullOrWhiteSpace($EnvValues.PROWLARR_NEWZNAB_API_KEY)
+
+    return [pscustomobject]@{
+        HasSabServer = $hasSabServer
+        HasNewznab = $hasNewznab
+        IsUsenetReady = ($hasSabServer -and $hasNewznab)
+    }
+}
+
+function Ensure-SabServer {
+    param(
+        [string]$ApiKey,
+        [hashtable]$EnvValues
+    )
+
+    $serverName = if ([string]::IsNullOrWhiteSpace($EnvValues.SAB_SERVER_NAME)) { 'PrimaryUsenet' } else { $EnvValues.SAB_SERVER_NAME }
+    $sslValue = if (($EnvValues.SAB_SERVER_SSL + '').ToLowerInvariant() -in @('1', 'true', 'yes', 'on')) { 1 } else { 0 }
+    $connections = if ([string]::IsNullOrWhiteSpace($EnvValues.SAB_SERVER_CONNECTIONS)) { 20 } else { [int]$EnvValues.SAB_SERVER_CONNECTIONS }
+    $port = if ([string]::IsNullOrWhiteSpace($EnvValues.SAB_SERVER_PORT)) { 563 } else { [int]$EnvValues.SAB_SERVER_PORT }
+
+    $result = Invoke-SabApi -ApiKey $ApiKey -Parameters @{
+        mode = 'set_config'
+        section = 'servers'
+        name = $serverName
+        displayname = $serverName
+        host = $EnvValues.SAB_SERVER_HOST
+        port = $port
+        username = $EnvValues.SAB_SERVER_USERNAME
+        password = $EnvValues.SAB_SERVER_PASSWORD
+        ssl = $sslValue
+        connections = $connections
+        enable = 1
+        priority = 0
+        optional = 0
+    }
+
+    if (-not $result.status) {
+        throw "SABnzbd did not accept the configured server '$serverName'."
+    }
+
+    Write-Good "Configured SABnzbd server: $serverName"
+}
+
 function Configure-Sabnzbd {
     param(
         [hashtable]$EnvValues,
@@ -646,6 +758,14 @@ function Configure-Sabnzbd {
     } else {
         Write-Info 'SABnzbd config already matched the expected baseline.'
     }
+
+    $usenetFlags = Get-UsenetAutomationFlags -EnvValues $EnvValues
+    if ($usenetFlags.HasSabServer) {
+        $apiKey = Get-SabApiKey -DockerRoot $EnvValues.DOCKER_ROOT
+        Ensure-SabServer -ApiKey $apiKey -EnvValues $EnvValues
+    } else {
+        Write-Info 'No SAB server credentials were provided in .env, so SABnzbd remains staged but provider-idle.'
+    }
 }
 
 function Configure-Servarr {
@@ -653,6 +773,7 @@ function Configure-Servarr {
 
     Write-Section 'Servarr bootstrap'
 
+    $usenetFlags = Get-UsenetAutomationFlags -EnvValues $EnvValues
     $sabApiKey = Get-SabApiKey -DockerRoot $EnvValues.DOCKER_ROOT
     $radarrKey = Get-ConfigXmlApiKey -Container 'radarr'
     $sonarrKey = Get-ConfigXmlApiKey -Container 'sonarr'
@@ -679,7 +800,7 @@ function Configure-Servarr {
         firstAndLast          = $false
         contentLayout         = 0
     }
-    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:7878' -ApiPath '/api/v3/downloadclient' -ApiKey $radarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $false -FieldValues @{
+    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:7878' -ApiPath '/api/v3/downloadclient' -ApiKey $radarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -FieldValues @{
         host                = 'gluetun'
         port                = 8080
         useSsl              = $false
@@ -708,7 +829,7 @@ function Configure-Servarr {
         firstAndLast       = $false
         contentLayout      = 0
     }
-    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8989' -ApiPath '/api/v3/downloadclient' -ApiKey $sonarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $false -FieldValues @{
+    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8989' -ApiPath '/api/v3/downloadclient' -ApiKey $sonarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -FieldValues @{
         host             = 'gluetun'
         port             = 8080
         useSsl           = $false
@@ -737,7 +858,7 @@ function Configure-Servarr {
         firstAndLast          = $false
         contentLayout         = 0
     }
-    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8686' -ApiPath '/api/v1/downloadclient' -ApiKey $lidarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $false -FieldValues @{
+    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8686' -ApiPath '/api/v1/downloadclient' -ApiKey $lidarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -FieldValues @{
         host                = 'gluetun'
         port                = 8080
         useSsl              = $false
@@ -790,7 +911,7 @@ function Configure-Servarr {
         firstAndLast = $false
         contentLayout = 0
     }
-    Ensure-ProwlarrDownloadClient -Name 'SABnzbd' -Implementation 'Sabnzbd' -Priority 2 -Enabled $false -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -FieldValues @{
+    Ensure-ProwlarrDownloadClient -Name 'SABnzbd' -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -FieldValues @{
         host = 'gluetun'
         port = 8080
         useSsl = $false
@@ -805,6 +926,17 @@ function Configure-Servarr {
     Ensure-ProwlarrIndexerProxy -Name 'FlareSolverr' -Implementation 'FlareSolverr' -Enabled $true -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -Tags @($flaresolverrTagId) -FieldValues @{
         host = 'http://flaresolverr:8191/'
         requestTimeout = 60
+    }
+
+    if ($usenetFlags.HasNewznab) {
+        $newznabName = if ([string]::IsNullOrWhiteSpace($EnvValues.PROWLARR_NEWZNAB_NAME)) { 'Primary Newznab' } else { $EnvValues.PROWLARR_NEWZNAB_NAME }
+        Ensure-ProwlarrNamedIndexer -Name $newznabName -DefinitionName 'Newznab' -Priority 5 -Enabled $true -AppProfileId 1 -Tags @() -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -FieldOverrides @{
+            baseUrl = $EnvValues.PROWLARR_NEWZNAB_URL
+            apiKey = $EnvValues.PROWLARR_NEWZNAB_API_KEY
+            apiPath = '/api'
+        }
+    } else {
+        Write-Info 'No Newznab indexer credentials were provided in .env, so Prowlarr remains torrent-only for now.'
     }
 
     if (-not $SkipProwlarrIndexers) {
@@ -857,6 +989,10 @@ function Write-HomepageRuntimeConfig {
         return
     }
 
+    if ([string]::IsNullOrWhiteSpace($ServerHost)) {
+        $ServerHost = 'localhost'
+    }
+
     Write-Section 'Homepage runtime config'
 
     $runtimePath = Join-Path $EnvValues.DOCKER_ROOT 'homepage\config\services.yaml'
@@ -870,11 +1006,11 @@ function Write-HomepageRuntimeConfig {
 - Media:
     - Plex:
         icon: plex.svg
-        href: http://$ServerHost:32400/web
+        href: http://${ServerHost}:32400/web
         description: Media streaming server
     - Radarr:
         icon: radarr.svg
-        href: http://$ServerHost:7878
+        href: http://${ServerHost}:7878
         description: Movie management
         widget:
           type: radarr
@@ -882,7 +1018,7 @@ function Write-HomepageRuntimeConfig {
           key: $radarrKey
     - Sonarr:
         icon: sonarr.svg
-        href: http://$ServerHost:8989
+        href: http://${ServerHost}:8989
         description: TV show management
         widget:
           type: sonarr
@@ -890,7 +1026,7 @@ function Write-HomepageRuntimeConfig {
           key: $sonarrKey
     - Lidarr:
         icon: lidarr.svg
-        href: http://$ServerHost:8686
+        href: http://${ServerHost}:8686
         description: Music management
         widget:
           type: lidarr
@@ -899,7 +1035,7 @@ function Write-HomepageRuntimeConfig {
 - Downloads:
     - qBittorrent:
         icon: qbittorrent.svg
-        href: http://$ServerHost:8081
+        href: http://${ServerHost}:8081
         description: Torrent client (VPN protected)
         widget:
           type: qbittorrent
@@ -908,11 +1044,11 @@ function Write-HomepageRuntimeConfig {
           password: $($EnvValues.QBIT_PASS)
     - SABnzbd:
         icon: sabnzbd.svg
-        href: http://$ServerHost:8082
+        href: http://${ServerHost}:8082
         description: Usenet client (VPN protected)
     - Prowlarr:
         icon: prowlarr.svg
-        href: http://$ServerHost:9696
+        href: http://${ServerHost}:9696
         description: Indexer manager
         widget:
           type: prowlarr
@@ -920,34 +1056,39 @@ function Write-HomepageRuntimeConfig {
           key: $prowlarrKey
     - Overseerr:
         icon: overseerr.svg
-        href: http://$ServerHost:5055
+        href: http://${ServerHost}:5055
         description: Media requests
 - Photos & Management:
     - Immich:
         icon: immich.svg
-        href: http://$ServerHost:2283
+        href: http://${ServerHost}:2283
         description: Photo & video management
     - Bazarr:
         icon: bazarr.svg
-        href: http://$ServerHost:6767
+        href: http://${ServerHost}:6767
         description: Subtitle downloads
     - Portainer:
         icon: portainer.svg
-        href: http://$ServerHost:9000
+        href: http://${ServerHost}:9000
         description: Docker management
     - Pi-hole:
         icon: pi-hole.svg
-        href: http://$ServerHost:8080/admin
+        href: http://${ServerHost}:9080/admin/
         description: Network ad blocker
         widget:
           type: pihole
           url: http://pihole:80
           key: $($EnvValues.PIHOLE_PASSWORD)
           version: 6
+- Operations:
+    - Update Status:
+        icon: mdi-update
+        href: http://${ServerHost}:8099
+        description: Safe update reports and blocked update notices
 - Optimization:
     - Tdarr:
         icon: mdi-video-converter
-        href: http://$ServerHost:8265
+        href: http://${ServerHost}:8265
         description: Media transcoding
         widget:
           type: tdarr
@@ -976,7 +1117,10 @@ function Show-ManualRemainders {
 }
 
 $envValues = Import-EnvFile -Path $EnvPath
-$serverHost = if ($envValues.ContainsKey('SERVER_HOST') -and -not [string]::IsNullOrWhiteSpace($envValues.SERVER_HOST)) { $envValues.SERVER_HOST } else { 'localhost' }
+$serverHost = 'localhost'
+if ($envValues.ContainsKey('SERVER_HOST') -and -not [string]::IsNullOrWhiteSpace($envValues['SERVER_HOST'])) {
+    $serverHost = $envValues['SERVER_HOST']
+}
 
 Write-Host 'Harbor Media Server post-launch bootstrap' -ForegroundColor Magenta
 Write-Host 'Repository root:' $RepoRoot -ForegroundColor DarkGray

@@ -30,6 +30,7 @@ This repository reflects the current structure of the live Harbor stack as of Ma
 | SABnzbd | Usenet client | 8082 | Optional secondary downloader behind Gluetun |
 | port-updater | Syncs qB listen port to Gluetun forwarded port | - | Self-heals Proton port changes |
 | gluetun-namespace-guard | Restarts shared-namespace download services after a Gluetun restart | - | Prevents qB and SAB from being marooned after VPN namespace changes |
+| download-orchestrator | qB workload, speed, and repair controller | - | Optional `experimental` profile with guarded live writes |
 | Radarr | Movie automation | 7878 | Uses `/movies` |
 | Sonarr | TV automation | 8989 | Uses `/tv` |
 | Lidarr | Music automation | 8686 | Uses `/music` |
@@ -49,9 +50,10 @@ This repository reflects the current structure of the live Harbor stack as of Ma
 | Homepage | Dashboard | 3000 | Service widgets and links |
 | Pi-hole | DNS ad blocking | 53, 8080, 9080, 8443 | Uses Pi-hole v6 env keys and an alternate web UI origin |
 | cloudflared | Cloudflare Tunnel connector | - | Optional public remote access path for Plex |
+| update-status | Safe-update status page | 8099 | Shows deferred, manual, and successful Harbor update decisions |
 | Portainer | Docker UI | 9000 | Optional management UI |
 | Recyclarr | TRaSH sync helper | - | Optional profile sync |
-| Watchtower | Container updates | - | Automatic image updates |
+| Watchtower | Container update monitor | - | Monitor-only; Harbor safe-update scripts decide when updates are applied |
 | autoheal | Restarts unhealthy containers | - | Watches `autoheal=true` labels |
 
 ## Repository layout
@@ -161,6 +163,12 @@ Important values:
 | `IMMICH_DB_PASSWORD` | Immich Postgres password |
 | `PLEX_ADVERTISE_IP` | Plex LAN advertise URL such as `http://192.168.1.100:32400/` |
 | `CLOUDFLARE_TUNNEL_TOKEN` | Optional Cloudflare Tunnel run token for public Plex remote access |
+| `SAB_SERVER_HOST` | Optional Usenet provider hostname for SABnzbd automation |
+| `SAB_SERVER_PORT` | Optional Usenet provider port, usually `563` for SSL |
+| `SAB_SERVER_USERNAME` | Optional Usenet provider username |
+| `SAB_SERVER_PASSWORD` | Optional Usenet provider password |
+| `PROWLARR_NEWZNAB_URL` | Optional Newznab/NZB indexer URL for Prowlarr automation |
+| `PROWLARR_NEWZNAB_API_KEY` | Optional Newznab/NZB indexer API key |
 | `RADARR_API_KEY` | Optional for Unpackerr/Recyclarr after first launch |
 | `SONARR_API_KEY` | Optional for Unpackerr/Recyclarr after first launch |
 | `LIDARR_API_KEY` | Optional for Unpackerr after first launch |
@@ -211,6 +219,13 @@ docker compose up -d --build
 .\scripts\bootstrap-media-stack.ps1
 ```
 
+6. Optional but recommended: install the daily Harbor safe-update task and seed the status page.
+
+```powershell
+.\scripts\install-update-task.ps1
+.\scripts\safe-update-media-stack.ps1 -Preview
+```
+
 The setup helper creates the named Docker volumes used by the SQLite-heavy services before first launch:
 
 - `radarr_config`
@@ -238,10 +253,35 @@ The Harbor setup path is split into two automation stages.
 
 | Stage | What it configures automatically | What it intentionally leaves to you |
 |---|---|---|
-| `setup.ps1` | Preflight checks, port scan, `.env` generation, runtime directories, named Docker volumes, runtime template copies, optional stack launch | Real VPN profile file, user-specific account choices, browser-only onboarding |
+| `setup.ps1` | Preflight checks, port scan, `.env` generation, runtime directories, named Docker volumes, runtime template copies, update-status placeholder files, optional scheduled-task install, optional stack launch | Real VPN profile file, user-specific account choices, browser-only onboarding |
 | `scripts/bootstrap-media-stack.ps1` | qBittorrent login and safe defaults, SABnzbd runtime defaults, Arr root folders, qB and SAB clients in Arr/Prowlarr, Prowlarr app links, FlareSolverr proxy, optional public indexer pack, runtime Recyclarr keys, runtime Homepage services file | Plex claim, Overseerr first admin, private/authenticated indexers, Usenet provider details, Cloudflare domain/token work, token-only Homepage widgets |
+| `scripts\safe-update-media-stack.ps1` | Pulls registry images, decides which Harbor bundles are safe to update, defers protected/risky bundles, re-applies Harbor bootstrap defaults, and writes the update report page | Repository-built services still need git pull plus rebuild; provider-specific manual review may still be required |
 
 That means a normal install can get very close to the live Harbor state before any manual clicking is required. The remaining manual work is mostly account-linked setup, not basic stack wiring.
+
+## Safe update flow
+
+Harbor no longer relies on blunt automatic container updates. Instead, it uses a safer two-part model:
+
+- `watchtower` monitors image updates without applying them on its own
+- `scripts\safe-update-media-stack.ps1` decides when an update is safe, defers protected bundles, and writes a human-readable status report
+
+Use these commands:
+
+```powershell
+.\scripts\safe-update-media-stack.ps1 -Preview
+.\scripts\safe-update-media-stack.ps1
+.\scripts\install-update-task.ps1
+```
+
+What the safe updater does:
+
+- pulls the latest registry images
+- groups Harbor into update bundles
+- refuses to update risky bundles while qB downloads, Plex sessions, or Tdarr work are active
+- leaves repository-built services for git pull plus rebuild
+- writes the live report page to `http://localhost:8099`
+- re-runs Harbor bootstrap after safe bundle updates so qB, SAB, Arr, Recyclarr, and Homepage defaults remain intact
 
 ## Current integration defaults
 

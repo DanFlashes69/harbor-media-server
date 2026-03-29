@@ -11,7 +11,7 @@ Use this alongside [SETUP.md](SETUP.md) when you want the full "what does this s
 | Gluetun | VPN tunnel and kill-switch namespace for qBittorrent and SABnzbd | Compose wiring, volumes, healthcheck, namespace guard compatibility | Your real OpenVPN profile in `DOCKER_ROOT\gluetun\custom.ovpn` and your real VPN credentials in `.env` |
 | gluetun-namespace-guard | Restarts shared-namespace services when Gluetun recreates its network namespace | Full container setup and restart logic | Nothing |
 | qBittorrent | Torrent download client | WebUI login bootstrap, safe defaults, `tun0` binding, `/downloads` paths, categories, Arr/Prowlarr wiring | Real qB credentials in `.env`; optional UI tuning if you want different behavior |
-| SABnzbd | Usenet download client | Container, paths, categories, Arr/Prowlarr client objects, Homepage tile | Real Usenet provider, real NZB indexers, optional retention/server tuning |
+| SABnzbd | Usenet download client | Container, paths, categories, Homepage tile, optional provider bootstrap from `.env` | Real Usenet provider, real NZB indexers, optional retention/server tuning |
 | port-updater | Syncs qB's listen port to the forwarded VPN port | Full container setup, Gluetun port-file mount, qB auth from `.env`, healthcheck | Valid qB credentials in `.env` |
 | download-orchestrator | Keeps qB focused on finishable, healthy downloads and handles bounded repair/retry logic | Optional compose service, state directory, qB/Arr awareness, non-interference guardrails | Decide whether to run the `experimental` profile |
 
@@ -19,7 +19,7 @@ Use this alongside [SETUP.md](SETUP.md) when you want the full "what does this s
 
 | Service | What it does | What Harbor configures automatically | What you still provide or confirm |
 |---|---|---|---|
-| Prowlarr | Central indexer manager | qB and SAB download clients, Radarr/Sonarr/Lidarr app links, FlareSolverr proxy, starter public torrent pack | Private trackers, authenticated indexers, NZB indexers, any provider-specific tuning |
+| Prowlarr | Central indexer manager | qB and SAB download clients, Radarr/Sonarr/Lidarr app links, FlareSolverr proxy, starter public torrent pack, optional primary Newznab bootstrap from `.env` | Private trackers, authenticated indexers, NZB indexers, any provider-specific tuning |
 | FlareSolverr | Proxy for Cloudflare-protected indexers | Container and Prowlarr proxy object | Nothing unless you want a different tagging strategy |
 | Overseerr | User request portal | Container and network path | First admin onboarding, Plex authentication, request defaults |
 | Radarr | Movie automation | Root folder, qB client, staged-disabled SAB client, named-volume storage | Any movie-quality/profile decisions beyond the included defaults |
@@ -45,11 +45,12 @@ Use this alongside [SETUP.md](SETUP.md) when you want the full "what does this s
 | Service | What it does | What Harbor configures automatically | What you still provide or confirm |
 |---|---|---|---|
 | Homepage | Unified dashboard | Runtime `services.yaml` generation for the main stack, safe widgets for services Harbor can auto-wire | Optional token-only widgets for Plex, Portainer, Immich, or Overseerr |
+| update-status | Human-readable safe-update report page | Placeholder files from setup plus live report generation from `safe-update-media-stack.ps1` | Nothing if you keep the default `http://localhost:8099` route |
 | Pi-hole | DNS filtering and ad blocking | Container, v6 env configuration, Homepage widget-ready routing | Decide whether only the server or the wider network should use it as DNS |
 | Portainer | Docker UI | Container and port exposure | First admin login |
 | cloudflared | Cloudflare Tunnel connector | Container and compose wiring if the token is present in `.env` | Cloudflare tunnel creation, hostname routing, domain ownership |
 | autoheal | Restarts unhealthy services | Full container wiring and label-based monitoring | Nothing |
-| Watchtower | Automatic image updates | Full container wiring | Update policy choices if you want different behavior |
+| Watchtower | Image update monitor | Full container wiring | Monitor-only by default; Harbor safe-update scripts decide when updates are applied |
 
 ## Security and safety services
 
@@ -76,6 +77,7 @@ These are the main internal URLs Harbor expects when the stack is running:
 | Immich | `http://immich-server:2283` |
 | Tdarr | `http://tdarr:8265` |
 | Pi-hole | `http://pihole:80` |
+| Update status | `http://update-status:80` |
 
 ## Default Harbor paths
 
@@ -102,10 +104,12 @@ After `setup.ps1`, `docker compose up -d --build`, and `scripts/bootstrap-media-
 - the right named Docker volumes
 - qBittorrent configured with Harbor-safe defaults
 - SABnzbd configured as an optional secondary downloader
+- SABnzbd able to become fully active automatically if the `.env` contains a real Usenet provider and Newznab indexer
 - Radarr, Sonarr, and Lidarr linked to qBittorrent and staged for SABnzbd
 - Prowlarr linked to the Arr apps, qBittorrent, SABnzbd, and FlareSolverr
 - a starter public torrent indexer pack in Prowlarr unless you skipped it
 - Homepage runtime links and key widgets
+- the safe-update status page reachable on `http://localhost:8099`
 - Recyclarr runtime keys filled in
 
 The remaining tasks are mostly account-linked services such as Plex claim, Overseerr onboarding, Cloudflare, private trackers, and Usenet providers.

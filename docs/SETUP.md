@@ -24,7 +24,8 @@ If you want the service-by-service reference, see [SERVICE-SETUP.md](SERVICE-SET
 3. Place your OpenVPN profile at `DOCKER_ROOT\gluetun\custom.ovpn`.
 4. Start the stack if `setup.ps1` did not already do it for you.
 5. Run [`scripts/bootstrap-media-stack.ps1`](../scripts/bootstrap-media-stack.ps1) if `setup.ps1` did not already do it for you.
-6. Finish the small set of account-linked tasks that cannot be safely automated without your credentials or your browser session.
+6. Install the daily safe-update task and seed the update status page.
+7. Finish the small set of account-linked tasks that cannot be safely automated without your credentials or your browser session.
 
 ## Quick start commands
 
@@ -34,15 +35,18 @@ cd harbor-media-server
 .\setup.ps1
 docker compose up -d --build
 .\scripts\bootstrap-media-stack.ps1
+.\scripts\install-update-task.ps1
+.\scripts\safe-update-media-stack.ps1 -Preview
 ```
 
 ## What each stage configures
 
 | Stage | What it does | What it leaves for you |
 |---|---|---|
-| [`setup.ps1`](../setup.ps1) | Checks prerequisites, scans ports, prompts for values, creates directories, creates named volumes, seeds Homepage/Recyclarr runtime templates, writes `.env`, optionally launches the stack, optionally launches the bootstrap | Real `.ovpn` file, external account credentials you do not want in `.env`, browser-only onboarding |
+| [`setup.ps1`](../setup.ps1) | Checks prerequisites, scans ports, prompts for values, creates directories, creates named volumes, seeds Homepage/Recyclarr runtime templates, seeds update-status placeholders, writes `.env`, optionally installs the safe-update task, optionally launches the stack, optionally launches the bootstrap | Real `.ovpn` file, external account credentials you do not want in `.env`, browser-only onboarding |
 | `docker compose up -d --build` | Builds and launches the stack from the repository root | None by itself; this is the runtime start step |
 | [`scripts/bootstrap-media-stack.ps1`](../scripts/bootstrap-media-stack.ps1) | Configures qBittorrent, SABnzbd, Radarr, Sonarr, Lidarr, Prowlarr, Recyclarr, and the runtime Homepage config | Plex claim/onboarding, Overseerr first admin, private trackers, Usenet providers, Cloudflare domain routing, token-only Homepage widgets |
+| [`scripts/safe-update-media-stack.ps1`](../scripts/safe-update-media-stack.ps1) | Pulls registry images, evaluates Harbor update safety rules, applies only the safe bundle updates in non-preview mode, and writes the live update report page | Repository-built services still update by git pull plus rebuild, and protected bundles may still require review |
 
 ## What the bootstrap script configures
 
@@ -61,14 +65,17 @@ It currently:
   - `prowlarr`
   - `manual`
 - configures SABnzbd paths, categories, direct-unpack defaults, and host whitelist
+- configures a SABnzbd server automatically if you provide `SAB_SERVER_*` values in `.env`
 - creates Radarr, Sonarr, and Lidarr root folders if they do not already exist
 - adds qBittorrent and staged-disabled SABnzbd download clients to Radarr, Sonarr, and Lidarr
 - adds Radarr, Sonarr, and Lidarr into Prowlarr
 - adds qBittorrent and staged-disabled SABnzbd into Prowlarr
 - adds a FlareSolverr proxy in Prowlarr
+- adds a primary Newznab indexer automatically if you provide `PROWLARR_NEWZNAB_*` values in `.env`
 - seeds a curated public torrent indexer pack in Prowlarr unless you skip it
 - updates the runtime Recyclarr config with the real Radarr and Sonarr API keys
 - generates a working runtime Homepage services file using the current host, API keys, and passwords the stack can safely discover
+- adds the safe-update status page link to Homepage
 
 ## Service setup matrix
 
@@ -87,14 +94,37 @@ It currently:
 | Overseerr | Container launch | No | First admin login, Plex authentication, optional request defaults |
 | Immich | Container launch, folders, database | No | First admin login, API key creation, mobile app onboarding |
 | Homepage | Template seed | Runtime service links and safe widgets | Token-only widgets such as Plex, Portainer, Immich, or Overseerr if you want them |
+| Safe update status | Placeholder status files | Live report generation through `safe-update-media-stack.ps1` | None if you keep the default `http://localhost:8099` path |
 | Pi-hole | Container launch | Homepage widget-ready runtime config | Decide whether only the server or your wider network should actually use Pi-hole as DNS |
 | Tdarr | Container launch, WSL GPU path | No | Custom libraries, worker counts, and transcode workflow decisions |
 | Recyclarr | Template seed | Runtime Radarr and Sonarr API keys | Any profile or release-preference tuning beyond the included baseline |
 | cloudflared | Container launch if token is present | No | Cloudflare tunnel creation, domain routing, and hostname publication |
 | Portainer | Container launch | No | First admin login |
 | autoheal | Container launch | No | None |
-| Watchtower | Container launch | No | Update policy decisions if you want different behavior |
+| Watchtower | Container launch | No | Monitor-only by default; Harbor safe-update scripts decide when updates are applied |
 | download-orchestrator | Optional container launch behind the experimental profile | No | Choose whether to run the orchestrator profile at all |
+
+## Safe update automation
+
+Harbor's recommended update flow is:
+
+1. install the scheduled task
+2. run a preview pass to see what Harbor would update
+3. let the task or a manual non-preview run apply only the safe bundle updates
+
+```powershell
+.\scripts\install-update-task.ps1
+.\scripts\safe-update-media-stack.ps1 -Preview
+.\scripts\safe-update-media-stack.ps1
+```
+
+Current behavior:
+
+- `watchtower` is monitor-only
+- the safe updater writes the report page to `http://localhost:8099`
+- registry-backed services update only when Harbor decides the bundle is safe
+- repository-built services still update through git pull plus `docker compose up -d --build`
+- protected bundles such as Pi-hole or complex stacks such as Immich are intentionally deferred for review
 
 ## What is still intentionally manual
 
@@ -148,6 +178,7 @@ Then open:
 - `http://localhost:8686`
 - `http://localhost:5055`
 - `http://localhost:32400/web`
+- `http://localhost:8099`
 
 ## When to use the AI-assisted setup flow
 
