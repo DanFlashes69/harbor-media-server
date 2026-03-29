@@ -59,3 +59,7 @@ portainer/data/
 *~
 .vscode/
 .idea/
+
+# Python cache
+__pycache__/
+*.pyc

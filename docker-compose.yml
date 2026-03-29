@@ -89,6 +89,109 @@ services:
       - autoheal=true
     restart: unless-stopped
 
+  download-orchestrator:
+    build:
+      context: ./download-orchestrator
+    container_name: download-orchestrator
+    profiles:
+      - experimental
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+    environment:
+      - QBIT_HOST=gluetun
+      - QBIT_PORT=8081
+      - QBIT_USER=${QBIT_USER}
+      - QBIT_PASS=${QBIT_PASS}
+      - DOWNLOADS_PATH=/downloads
+      - STATE_DIR=/state
+      - CHECK_INTERVAL=60
+      - OBSERVE_ONLY=false
+      - ALLOW_TORRENT_CONTROL=true
+      - ALLOW_QBIT_PREF_WRITES=true
+      - ALLOW_ADVANCED_QBIT_PREF_WRITES=true
+      - ALLOW_QBIT_RECOVERY_ACTIONS=true
+      - ALLOW_ARR_COMMANDS=true
+      - ALLOW_BROKEN_DOWNLOAD_RECOVERY=true
+      - ALLOW_RETROACTIVE_ARR_REPAIR=true
+      - ALLOW_BACKLOG_ARR_REPAIR=true
+      - ENABLE_SPEED_TUNING=true
+      - EXPECTED_INTERFACE=tun0
+      - GLUETUN_PORT_FILE=/gluetun-port/forwarded_port
+      - RESERVED_FREE_GB=20
+      - EMERGENCY_FREE_GB=10
+      - LOW_SPACE_THRESHOLD_GB=40
+      - HIGH_SPACE_THRESHOLD_GB=120
+      - HEALTHY_AVAILABILITY_FLOOR=1.1
+      - COMPLETION_PRIORITY_PROGRESS=0.8
+      - COMPLETION_PRIORITY_REMAINING_GB=8
+      - MAX_ACTIVE_DOWNLOADS_LOW=1
+      - MAX_ACTIVE_DOWNLOADS_MEDIUM=3
+      - MAX_ACTIVE_DOWNLOADS_HIGH=6
+      - CONTROL_STABILITY_CYCLES=2
+      - PREF_STABILITY_CYCLES=2
+      - MIN_TORRENT_ACTION_INTERVAL_SECONDS=300
+      - MIN_PREF_WRITE_INTERVAL_SECONDS=900
+      - MAX_TORRENT_ACTIONS_PER_CYCLE=8
+      - QBIT_WRITE_ALLOWLIST=max_active_downloads,max_active_torrents,max_active_uploads,max_connec,max_connec_per_torrent,max_uploads_per_torrent,connection_speed,max_concurrent_http_announces,async_io_threads,disk_cache,disk_cache_ttl,disk_queue_size,request_queue_size,enable_piece_extent_affinity,enable_coalesce_read_write,send_buffer_low_watermark,send_buffer_watermark,send_buffer_watermark_factor,socket_backlog_size,socket_receive_buffer_size,socket_send_buffer_size,peer_turnover,peer_turnover_cutoff,peer_turnover_interval,file_pool_size,checking_memory_use
+      - SPEED_CONN_FLOOR=400
+      - SPEED_CONN_CEILING=1000
+      - SPEED_CONN_PER_TORRENT_FOCUSED=220
+      - SPEED_CONN_PER_TORRENT_CONSTRAINED=180
+      - SPEED_CONN_PER_TORRENT_BALANCED=140
+      - SPEED_CONN_PER_TORRENT_EXPANSIVE=100
+      - SPEED_HTTP_ANNOUNCES_FOCUSED=90
+      - SPEED_HTTP_ANNOUNCES_CONSTRAINED=70
+      - SPEED_HTTP_ANNOUNCES_BALANCED=50
+      - SPEED_HTTP_ANNOUNCES_EXPANSIVE=40
+      - SPEED_ACTIVE_TORRENT_HEADROOM_FOCUSED=2
+      - SPEED_ACTIVE_TORRENT_HEADROOM_CONSTRAINED=3
+      - SPEED_ACTIVE_TORRENT_HEADROOM_BALANCED=4
+      - SPEED_ACTIVE_TORRENT_HEADROOM_EXPANSIVE=6
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_FOCUSED=20
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_CONSTRAINED=16
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_BALANCED=12
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_EXPANSIVE=10
+      - SPEED_CONNECTION_RATE_FOCUSED=40
+      - SPEED_CONNECTION_RATE_CONSTRAINED=50
+      - SPEED_CONNECTION_RATE_BALANCED=60
+      - SPEED_CONNECTION_RATE_EXPANSIVE=80
+      - ENABLE_ADVANCED_SPEED_ADVISORIES=true
+      - MANAGE_FORCE_STARTED=false
+      - STALL_FAILOVER_SECONDS=900
+      - ARR_HISTORY_LOOKBACK_HOURS=168
+      - RETRO_REPAIR_LOOKBACK_HOURS=720
+      - RETRO_REPAIR_STALE_HOURS=24
+      - IMPORT_GRACE_HOURS=6
+      - BROKEN_DOWNLOAD_GRACE_HOURS=2
+      - MAX_ARR_COMMANDS_PER_CYCLE=1
+      - MIN_ARR_COMMAND_INTERVAL_SECONDS=21600
+      - ARR_GLOBAL_COMMAND_INTERVAL_SECONDS=3600
+      - MAX_ARR_SEARCH_RETRIES_BROKEN=2
+      - MAX_ARR_SEARCH_RETRIES_ORPHAN=1
+      - MAX_ARR_SEARCH_RETRIES_QUEUE_WARNING=2
+      - MAX_ARR_SEARCH_RETRIES_HISTORY=1
+      - MAX_ARR_SEARCH_RETRIES_WANTED=1
+      - MAX_QBIT_RECOVERY_ACTIONS_PER_CYCLE=1
+      - MIN_QBIT_RECOVERY_INTERVAL_SECONDS=7200
+      - MAX_QBIT_RECOVERY_ATTEMPTS_PER_HASH=2
+    volumes:
+      - ${DATA_ROOT}/downloads:/downloads
+      - ${DOCKER_ROOT}/download-orchestrator:/state
+      - gluetun_port:/gluetun-port:ro
+      - radarr_config:/arr/radarr:ro
+      - sonarr_config:/arr/sonarr:ro
+      - lidarr_config:/arr/lidarr:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /state/heartbeat && find /state/heartbeat -mmin -3 | grep -q heartbeat"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
 
   radarr:
     image: lscr.io/linuxserver/radarr:latest
@@ -123,7 +226,7 @@ services:
     ports:
       - "8989:8989"
     volumes:
-      - ${DOCKER_ROOT}/sonarr/config:/config
+      - sonarr_config:/config
       - ${DATA_ROOT}/downloads:/downloads
       - ${DATA_ROOT}/media/tv:/tv
     healthcheck:
@@ -146,7 +249,7 @@ services:
     ports:
       - "8686:8686"
     volumes:
-      - ${DOCKER_ROOT}/lidarr/config:/config
+      - lidarr_config:/config
       - ${DATA_ROOT}/downloads:/downloads
       - ${DATA_ROOT}/media/music:/music
     healthcheck:
@@ -169,7 +272,7 @@ services:
     ports:
       - "6767:6767"
     volumes:
-      - ${DOCKER_ROOT}/bazarr/config:/config
+      - bazarr_config:/config
       - ${DATA_ROOT}/media/movies:/movies
       - ${DATA_ROOT}/media/tv:/tv
     healthcheck:
@@ -192,7 +295,7 @@ services:
     ports:
       - "9696:9696"
     volumes:
-      - ${DOCKER_ROOT}/prowlarr/config:/config
+      - prowlarr_config:/config
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9696/ping >/dev/null || exit 1"]
       interval: 30s
@@ -540,4 +643,17 @@ services:
 volumes:
   gluetun_port:
   radarr_config:
+    name: radarr_config
+    external: true
+  sonarr_config:
+    name: sonarr_config
+    external: true
+  lidarr_config:
+    name: lidarr_config
+    external: true
+  bazarr_config:
+    name: bazarr_config
+    external: true
+  prowlarr_config:
+    name: prowlarr_config
     external: true

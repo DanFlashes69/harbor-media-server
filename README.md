@@ -49,6 +49,7 @@ Run Docker Compose from the repository root. Do not copy `docker-compose.yml` in
 repo-root/
 |-- .env.example
 |-- docker-compose.yml
+|-- download-orchestrator/
 |-- setup.ps1
 |-- scanner/
 |-- port-updater/
@@ -88,7 +89,11 @@ DOCKER_ROOT (example: D:\docker)
 
 Docker named volumes
 |-- gluetun_port
-`-- radarr_config
+|-- radarr_config
+|-- sonarr_config
+|-- lidarr_config
+|-- bazarr_config
+`-- prowlarr_config
 
 DATA_ROOT (example: D:\NAS)
 |-- downloads/
@@ -166,6 +171,14 @@ DOCKER_ROOT\gluetun\custom.ovpn
 ```powershell
 docker compose up -d --build
 ```
+
+The setup helper also creates the named Docker volumes used by the SQLite-heavy services before first launch:
+
+- `radarr_config`
+- `sonarr_config`
+- `lidarr_config`
+- `bazarr_config`
+- `prowlarr_config`
 
 ## First launch checklist
 
@@ -251,6 +264,7 @@ It will:
 - scan the required ports
 - collect `DOCKER_ROOT`, `DATA_ROOT`, timezone, qB, Pi-hole, Immich, and Plex advertise values
 - create runtime directories under `DOCKER_ROOT` and `DATA_ROOT`
+- create the named Docker volumes used by the SQLite-heavy media apps
 - seed Homepage and Recyclarr template files into `DOCKER_ROOT`
 - generate `.env` in the repository root
 - optionally start the stack from the repository root
@@ -275,6 +289,71 @@ The updater expects valid qB WebUI credentials in:
 
 - `QBIT_USER`
 - `QBIT_PASS`
+
+### Download orchestrator
+
+The repo now includes an optional `download-orchestrator` service behind the `experimental` profile.
+
+Its job is to:
+- keep qB focused on the healthiest and most finishable torrents for the current free-space budget
+- dynamically narrow or widen qB's active queue window
+- apply a reviewed safe set of qB speed/performance preferences
+- detect broken `missingFiles` cases and prefer qB salvage before any replacement search
+- issue tightly bounded Arr retry/search commands for high-confidence queue/import failures
+- surface older backlog drift separately from the live repair lane
+
+Its job is not to:
+- change VPN provider settings
+- change Gluetun killswitch or forwarded-port ownership logic
+- rewrite Arr quality/import/profile settings
+- change qB save paths, categories, auth, bind interface, or listen port
+- take ownership of Plex, Tdarr, Pi-hole, Homepage, or unrelated services
+
+Current control boundaries:
+- tunnel/port-forward guard must be healthy before workload control is allowed
+- protected qB settings and category-path baselines are checked every cycle
+- torrent start/stop actions are stability-gated and cooldown-gated
+- qB preference writes are stability-gated and cooldown-gated
+- qB recovery actions and Arr repair actions have their own retry limits and cooldowns
+
+Current live write tiers:
+- queue window:
+  - `max_active_downloads`
+  - `max_active_torrents`
+  - `max_active_uploads`
+- network-lite speed tier:
+  - `max_connec`
+  - `max_connec_per_torrent`
+  - `max_uploads_per_torrent`
+  - `connection_speed`
+  - `max_concurrent_http_announces`
+- advanced reviewed tier:
+  - `async_io_threads`
+  - `disk_cache`
+  - `disk_cache_ttl`
+  - `disk_queue_size`
+  - `request_queue_size`
+  - `enable_piece_extent_affinity`
+  - `enable_coalesce_read_write`
+  - `send_buffer_*`
+  - `socket_backlog_size`
+  - `peer_turnover*`
+  - `file_pool_size`
+  - `checking_memory_use`
+
+Unknown or newly introduced qB settings remain observation-only until explicitly reviewed.
+
+Runtime state files written by the orchestrator:
+- `/state/snapshot.json`
+- `/state/orphan-report.json`
+- `/state/qbit-preferences.json`
+- `/state/runtime-state.json`
+
+To run the experimental orchestrator profile:
+
+```powershell
+docker compose --profile experimental up -d --build download-orchestrator
+```
 
 ### Autoheal
 
@@ -313,6 +392,14 @@ Important current behavior:
 - files must be stable before they are scanned
 - ClamAV transport/runtime errors do not mark a file as clean
 - a periodic full-library ClamAV pass is available through `scanner/retro-media-clamscan.sh`
+
+### SQLite-heavy service storage
+
+Radarr, Sonarr, Lidarr, Bazarr, and Prowlarr use named Docker volumes for `/config` instead of writing their live SQLite databases directly to the Windows bind-mounted config folders.
+
+That change exists to reduce recurring SQLite lock/corruption issues under sustained Arr/Prowlarr activity on the Windows filesystem path.
+
+The old bind-mounted config folders can still exist on disk as migration/backup safety copies, but the live containers read and write through the named volumes listed in the runtime layout above.
 
 ## Service-specific setup notes
 

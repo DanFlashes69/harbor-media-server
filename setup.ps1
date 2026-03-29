@@ -72,6 +72,14 @@ $DataDirectories = @(
     'quarantine'
 )
 
+$NamedDockerVolumes = @(
+    'radarr_config',
+    'sonarr_config',
+    'lidarr_config',
+    'bazarr_config',
+    'prowlarr_config'
+)
+
 function Write-Section {
     param([string]$Title)
     Write-Host "`n== $Title ==" -ForegroundColor Cyan
@@ -232,6 +240,20 @@ function New-Directories {
     Write-Good 'Media, downloads, recycle bins, and quarantine directories are ready.'
 }
 
+function Ensure-NamedVolumes {
+    Write-Section 'Ensuring named Docker volumes'
+
+    foreach ($volume in $NamedDockerVolumes) {
+        try {
+            docker volume inspect $volume | Out-Null
+            Write-Info "Docker volume already exists: $volume"
+        } catch {
+            docker volume create $volume | Out-Null
+            Write-Good "Created Docker volume: $volume"
+        }
+    }
+}
+
 function Write-EnvFile {
     param(
         [hashtable]$Values
@@ -383,6 +405,7 @@ $values = @{
 }
 
 New-Directories -DockerRoot $values.DockerRoot -DataRoot $values.DataRoot
+Ensure-NamedVolumes
 Seed-Templates -DockerRoot $values.DockerRoot
 Write-EnvFile -Values $values
 Test-VpnFile -DockerRoot $values.DockerRoot | Out-Null
