@@ -1,31 +1,35 @@
 # Harbor Media Server Setup Guide
 
-This is the recommended install path when you want Harbor to do as much of the heavy lifting as possible without committing personal credentials or forcing unsafe defaults into the repository.
+This guide covers the standard Windows-first install path for Harbor Media Server on a single PC.
 
-## Setup goals
+The goal is to get a new machine from a fresh clone to a working Harbor stack with as little manual rework as possible. The setup flow handles folders, volumes, initial configuration, service wiring, and guarded update automation. The remaining manual steps are limited to account-linked tasks such as Plex onboarding, private trackers, Cloudflare, and Usenet providers.
 
-The setup flow is designed to get a new machine as close as possible to the current live Harbor stack with minimal manual interaction:
+## What the setup is trying to achieve
 
-- create the correct folder layout
+The default Harbor install flow is built to:
+
+- create the correct Windows folder layout
 - create the named Docker volumes used by the SQLite-heavy services
 - generate `.env`
 - launch the stack from the repository root
-- wire qBittorrent, SABnzbd, Radarr, Sonarr, Lidarr, Prowlarr, the Indexer Guardian, Recyclarr, and Homepage together
-- leave only account-linked or browser-only tasks for the operator or an autonomous browser agent
+- wire qBittorrent, SABnzbd, Prowlarr, Radarr, Sonarr, Lidarr, Recyclarr, Homepage, and the safety layers together
+- leave only the account-linked and browser-only tasks for the operator
 
-If you want the version tailored for autonomous agents, see [AI-SETUP.md](AI-SETUP.md).
+For a service-by-service view, use [SERVICE-SETUP.md](SERVICE-SETUP.md).
 
-If you want the service-by-service reference, see [SERVICE-SETUP.md](SERVICE-SETUP.md).
+For autonomous-agent prompts, use [AI-SETUP.md](AI-SETUP.md).
 
 ## Recommended install flow
 
 1. Clone the repository.
 2. Run [`setup.ps1`](../setup.ps1).
-3. Place your OpenVPN profile at `DOCKER_ROOT\gluetun\custom.ovpn`.
-4. Start the stack if `setup.ps1` did not already do it for you.
-5. Run [`scripts/bootstrap-media-stack.ps1`](../scripts/bootstrap-media-stack.ps1) if `setup.ps1` did not already do it for you.
-6. Install the daily safe-update task and seed the update status page.
-7. Finish the small set of account-linked tasks that cannot be safely automated without your credentials or your browser session.
+3. Place the OpenVPN profile at `DOCKER_ROOT\gluetun\custom.ovpn`.
+4. Start the stack if `setup.ps1` did not already do it.
+5. Run [`scripts/bootstrap-media-stack.ps1`](../scripts/bootstrap-media-stack.ps1) if `setup.ps1` did not already do it.
+6. Install the safe-update task.
+7. Seed the safe-update status page.
+8. Complete the small set of remaining browser-only tasks.
+9. Run the verification checklist.
 
 ## Quick start commands
 
@@ -39,24 +43,24 @@ docker compose up -d --build
 .\scripts\safe-update-media-stack.ps1 -Preview
 ```
 
-## What each stage configures
+## What each stage does
 
-| Stage | What it does | What it leaves for you |
+| Stage | What it does | What it leaves to the operator |
 |---|---|---|
-| [`setup.ps1`](../setup.ps1) | Checks prerequisites, scans ports, prompts for values, creates directories, creates named volumes, seeds Homepage/Recyclarr runtime templates, seeds update-status placeholders, writes `.env`, optionally installs the safe-update task, optionally launches the stack, optionally launches the bootstrap | Real `.ovpn` file, external account credentials you do not want in `.env`, browser-only onboarding |
-| `docker compose up -d --build` | Builds and launches the stack from the repository root | None by itself; this is the runtime start step |
-| [`scripts/bootstrap-media-stack.ps1`](../scripts/bootstrap-media-stack.ps1) | Configures qBittorrent, SABnzbd, Radarr, Sonarr, Lidarr, Prowlarr, Recyclarr, and the runtime Homepage config | Plex claim/onboarding, Overseerr first admin, private trackers, Usenet providers, Cloudflare domain routing, token-only Homepage widgets |
-| [`scripts/safe-update-media-stack.ps1`](../scripts/safe-update-media-stack.ps1) | Pulls registry images, evaluates Harbor update safety rules, applies only the safe bundle updates in non-preview mode, and writes the live update report page | Repository-built services still update by git pull plus rebuild, and protected bundles may still require review |
+| [`setup.ps1`](../setup.ps1) | Checks prerequisites, scans ports, prompts for values, creates directories, creates named volumes, seeds runtime templates, writes `.env`, optionally installs the update task, optionally launches the stack | Real VPN profile file, provider credentials, browser-only onboarding |
+| `docker compose up -d --build` | Builds and launches the stack from the repository root | Nothing by itself |
+| [`scripts/bootstrap-media-stack.ps1`](../scripts/bootstrap-media-stack.ps1) | Configures qBittorrent, SABnzbd, Radarr, Sonarr, Lidarr, Prowlarr, Recyclarr, Homepage, and the public indexer baseline | Plex claim, Overseerr first admin, private trackers, Usenet providers, premium NZB indexers, Cloudflare |
+| [`scripts/safe-update-media-stack.ps1`](../scripts/safe-update-media-stack.ps1) | Pulls registry images, classifies updates, applies only safe bundles when not in preview mode, writes the update-status page | Repository-built services still update through git pull plus rebuild |
 
 ## What the bootstrap script configures
 
-The bootstrap phase is where Harbor becomes a linked stack instead of a pile of containers.
+`bootstrap-media-stack.ps1` is the piece that turns Harbor from a pile of containers into a linked system.
 
 It currently:
 
-- logs into qBittorrent using the `.env` credentials or the one-time temporary qB bootstrap password from container logs
+- logs into qBittorrent using the configured credentials or the bootstrap password from the container logs
 - sets qBittorrent paths to `/downloads` and `/downloads/incomplete`
-- forces qBittorrent to bind to `tun0`
+- binds qBittorrent to `tun0`
 - disables qB random-port startup behavior and UPnP
 - creates the expected qB categories:
   - `radarr`
@@ -64,55 +68,47 @@ It currently:
   - `lidarr`
   - `prowlarr`
   - `manual`
-- configures SABnzbd paths, categories, direct-unpack defaults, and host whitelist
-- configures a SABnzbd server automatically if you provide `SAB_SERVER_*` values in `.env`
-- creates Radarr, Sonarr, and Lidarr root folders if they do not already exist
-- adds qBittorrent and staged-disabled SABnzbd download clients to Radarr, Sonarr, and Lidarr
+- configures SABnzbd paths, categories, host whitelist, and direct-unpack defaults
+- configures a SAB provider automatically if the `SAB_SERVER_*` values are present in `.env`
+- creates Radarr, Sonarr, and Lidarr root folders if needed
+- adds qBittorrent and provider-gated SABnzbd as download clients in Radarr, Sonarr, and Lidarr
 - adds Radarr, Sonarr, and Lidarr into Prowlarr
-- adds qBittorrent and staged-disabled SABnzbd into Prowlarr
+- adds qBittorrent and SABnzbd into Prowlarr
 - adds a FlareSolverr proxy in Prowlarr
-- adds a primary Newznab indexer automatically if you provide `PROWLARR_NEWZNAB_*` values in `.env`
-- seeds a curated public torrent indexer pack in Prowlarr unless you skip it
-- seeds that public pack as Harbor-managed slots so the Indexer Guardian can replace broken public indexers automatically
-- updates the runtime Recyclarr config with the real Radarr and Sonarr API keys
-- generates a working runtime Homepage services file using the current host, API keys, and passwords the stack can safely discover
-- adds the safe-update status page link to Homepage
+- seeds the default managed public torrent indexer set unless explicitly skipped
+- adds a primary Newznab source automatically if `PROWLARR_NEWZNAB_*` is present
+- seeds `AnimeTosho (Usenet)` automatically as a limited fallback when SAB provider values exist but no primary Newznab source is configured
+- patches the runtime Recyclarr config with the real Radarr and Sonarr API keys
+- generates the runtime Homepage services file using the current host and the stack values Harbor can discover safely
+- adds the update-status page to Homepage
 
-## Service setup matrix
+## Service automation matrix
 
 | Service | Automated by `setup.ps1` | Automated by bootstrap | Still manual or account-linked |
 |---|---|---|---|
-| Gluetun | Folders, env placeholders, Compose service | No | Provide the real `.ovpn` file and valid VPN credentials |
-| qBittorrent | Folders, env placeholders | Login, WebUI credentials, safe defaults, categories, `tun0` binding, runtime config patch | None if bootstrap succeeds |
-| SABnzbd | Folders, env placeholders | Runtime config, paths, categories, staged Arr and Prowlarr integration | Add a real Usenet provider and at least one NZB indexer if you want real Usenet jobs |
-| Prowlarr | Container launch | App links, download clients, FlareSolverr proxy, default public torrent indexers | Private trackers, authenticated indexers, any provider-specific tuning |
-| Indexer Guardian | State directory and container launch | Monitors Harbor-managed public Prowlarr slots, replaces broken public indexers with validated alternatives, and cleans stale Arr-side copies | Private trackers and any indexers you do not want Harbor to manage |
-| Radarr | Container launch, named volume | qB and SAB clients, root folder | Quality/profile tuning beyond the included baseline |
-| Sonarr | Container launch, named volume | qB and SAB clients, root folder | Anime strategy, quality/profile tuning beyond the included baseline |
-| Lidarr | Container launch, named volume | qB and SAB clients, root folder | Music-specific profile strategy |
-| Bazarr | Container launch, named volume | No | Subtitle providers and any custom language scoring |
-| FlareSolverr | Container launch | Prowlarr proxy object | None if you keep the default tag strategy |
-| Plex | Container launch, media mounts, GPU wiring | No | First login or claim, library confirmation, optional remote-access polish |
-| Overseerr | Container launch | No | First admin login, Plex authentication, optional request defaults |
-| Immich | Container launch, folders, database | No | First admin login, API key creation, mobile app onboarding |
-| Homepage | Template seed | Runtime service links and safe widgets | Token-only widgets such as Plex, Portainer, Immich, or Overseerr if you want them |
-| Safe update status | Placeholder status files | Live report generation through `safe-update-media-stack.ps1` | None if you keep the default `http://localhost:8099` path |
-| Pi-hole | Container launch | Homepage widget-ready runtime config | Decide whether only the server or your wider network should actually use Pi-hole as DNS |
-| Tdarr | Container launch, WSL GPU path | No | Custom libraries, worker counts, and transcode workflow decisions |
-| Recyclarr | Template seed | Runtime Radarr and Sonarr API keys | Any profile or release-preference tuning beyond the included baseline |
-| cloudflared | Container launch if token is present | No | Cloudflare tunnel creation, domain routing, and hostname publication |
-| Portainer | Container launch | No | First admin login |
-| autoheal | Container launch | No | None |
-| Watchtower | Container launch | No | Monitor-only by default; Harbor safe-update scripts decide when updates are applied |
-| download-orchestrator | Optional container launch behind the experimental profile, including active-swarm rotation and bounded repair logic | No | Choose whether to run the orchestrator profile at all |
+| Gluetun | Folders, env placeholders, Compose wiring | No | Real `.ovpn` file and valid VPN credentials |
+| qBittorrent | Folders and env placeholders | Login, paths, categories, `tun0` binding, safe defaults | None if bootstrap succeeds |
+| SABnzbd | Folders and env placeholders | Paths, categories, provider bootstrap, Arr and Prowlarr links | Real provider and any premium NZB sources |
+| Prowlarr | Container launch | App links, download clients, FlareSolverr, public indexer set, optional Newznab source | Private trackers and authenticated sources |
+| Indexer Guardian | Container launch | Watches and repairs the managed public Prowlarr indexer set | Private trackers and any unmanaged public sources |
+| Radarr | Container launch and named volume | Root folder and download clients | Custom movie policy beyond repo defaults |
+| Sonarr | Container launch and named volume | Root folder and download clients | Custom television or anime policy beyond repo defaults |
+| Lidarr | Container launch and named volume | Root folder and download clients | Music policy beyond repo defaults |
+| Bazarr | Container launch and named volume | No | Subtitle providers and language strategy |
+| FlareSolverr | Container launch | Prowlarr proxy object | Optional tag strategy changes |
+| Plex | Container launch and mounts | No | Claim, login, libraries, remote-access decisions |
+| Overseerr | Container launch | No | First admin setup and Plex connection |
+| Immich | Container launch and database wiring | No | First admin login and client onboarding |
+| Homepage | Runtime template seed | Runtime services file and safe widgets | Token-only widgets if desired |
+| Pi-hole | Container launch | Homepage-ready route | Whether the wider network should use Pi-hole as DNS |
+| Tdarr | Container launch and mounts | No | Libraries, workers, transcode workflow |
+| Recyclarr | Template seed | Runtime API key patching | Optional release-profile changes |
+| Safe update status | Placeholder files | Live report generation | Nothing if the default route is fine |
+| download-orchestrator | Container launch | No | None |
 
 ## Safe update automation
 
-Harbor's recommended update flow is:
-
-1. install the scheduled task
-2. run a preview pass to see what Harbor would update
-3. let the task or a manual non-preview run apply only the safe bundle updates
+Harbor's intended update path is:
 
 ```powershell
 .\scripts\install-update-task.ps1
@@ -122,28 +118,26 @@ Harbor's recommended update flow is:
 
 Current behavior:
 
-- `watchtower` is monitor-only
-- the safe updater writes the report page to `http://localhost:8099`
-- registry-backed services update only when Harbor decides the bundle is safe
-- repository-built services still update through git pull plus `docker compose up -d --build`
-- protected bundles such as Pi-hole or complex stacks such as Immich are intentionally deferred for review
+- `watchtower` monitors only
+- the safe updater writes the status page to `http://localhost:8099`
+- registry-backed containers update only when Harbor classifies the bundle as safe
+- repository-built services update through git pull plus `docker compose up -d --build`
+- protected or risky bundles can be deferred instead of applied automatically
 
-## What is still intentionally manual
+## What remains manual
 
-These pieces either require your personal accounts or are safer to confirm in a browser:
+These tasks depend on user-owned accounts, tokens, or operator intent:
 
-- Plex first-time claim/login and library confirmation
-- Overseerr first admin onboarding and Plex connection
-- Cloudflare Tunnel domain routing and token creation
-- private tracker setup in Prowlarr
-- Usenet provider details and premium NZB indexers
-- token-only Homepage widgets
-- any custom quality-profile or release-profile tuning beyond the included defaults
-- any public-indexer strategy changes beyond the default Harbor-managed pack
+- Plex claim or login and final library confirmation
+- Overseerr first admin onboarding
+- private trackers and authenticated indexers in Prowlarr
+- SAB provider details and premium NZB sources
+- Cloudflare Tunnel creation, token issuance, and hostname routing
+- token-only Homepage widgets such as Plex, Portainer, Immich, or Overseerr
 
 ## Optional bootstrap switches
 
-Skip the default Prowlarr public indexer pack:
+Skip the default public indexer set:
 
 ```powershell
 .\scripts\bootstrap-media-stack.ps1 -SkipProwlarrIndexers
@@ -157,7 +151,7 @@ Skip generated Homepage runtime config:
 
 ## Recommended verification after bootstrap
 
-Run these checks after the bootstrap completes:
+Run:
 
 ```powershell
 docker compose ps
@@ -168,9 +162,11 @@ docker logs radarr --tail 50
 docker logs sonarr --tail 50
 docker logs lidarr --tail 50
 docker logs homepage --tail 50
+docker logs download-orchestrator --tail 50
+docker logs indexer-guardian --tail 50
 ```
 
-Then open:
+Then verify these endpoints:
 
 - `http://localhost:3000`
 - `http://localhost:8081`
@@ -182,14 +178,15 @@ Then open:
 - `http://localhost:5055`
 - `http://localhost:32400/web`
 - `http://localhost:8099`
+- `http://127.0.0.1:9080/admin/`
 
-## When to use the AI-assisted setup flow
+## Common first-run blockers
 
-Use the AI-assisted setup flow when you want an autonomous agent to:
-
-- run the scripts for you
-- finish the remaining browser-only setup in Plex or Overseerr
-- add authenticated indexers or providers
-- perform a final top-to-bottom verification pass
-
-See [AI-SETUP.md](AI-SETUP.md) for ready-to-paste prompts.
+| Symptom | Likely cause |
+|---|---|
+| Gluetun will not go healthy | Missing or invalid OpenVPN file or VPN credentials |
+| qBittorrent is up but cannot download | VPN path issue, poor swarm quality, or no forwarded port |
+| SABnzbd never receives jobs | No provider configured, or no useful NZB source configured |
+| Arr apps show no releases | Prowlarr not seeded yet, or no working indexers available |
+| Homepage cards load but widgets fail | Token- or API-key-dependent widgets still need manual setup |
+| Plex remote access is not public | Cloudflare or router path has not been completed yet |

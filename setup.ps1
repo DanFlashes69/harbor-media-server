@@ -459,7 +459,7 @@ if (-not (Scan-Ports)) {
 }
 
 $dockerRoot = Read-Default 'DOCKER_ROOT' 'D:\docker'
-$dataRoot = Read-Default 'DATA_ROOT' 'D:\NAS'
+$dataRoot = Read-Default 'DATA_ROOT' 'D:\media'
 $serverHost = Read-Default 'Server host for generated Homepage links' 'localhost'
 $timezone = Read-Default 'Timezone' 'America/Los_Angeles'
 $vpnUsername = Read-Default 'VPN username' 'your_vpn_username_here'

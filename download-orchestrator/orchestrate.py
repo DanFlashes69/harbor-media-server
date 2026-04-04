@@ -57,8 +57,8 @@ class Config:
     allow_backlog_arr_repair: bool = env_bool("ALLOW_BACKLOG_ARR_REPAIR", False)
     enable_speed_tuning: bool = env_bool("ENABLE_SPEED_TUNING", True)
     refresh_protected_baselines: bool = env_bool("REFRESH_PROTECTED_BASELINES", False)
-    reserved_free_gb: float = env_float("RESERVED_FREE_GB", 20)
-    emergency_free_gb: float = env_float("EMERGENCY_FREE_GB", 10)
+    reserved_free_gb: float = env_float("RESERVED_FREE_GB", 1)
+    emergency_free_gb: float = env_float("EMERGENCY_FREE_GB", 3)
     low_space_threshold_gb: float = env_float("LOW_SPACE_THRESHOLD_GB", 40)
     high_space_threshold_gb: float = env_float("HIGH_SPACE_THRESHOLD_GB", 120)
     max_active_downloads_low: int = env_int("MAX_ACTIVE_DOWNLOADS_LOW", 1)
@@ -67,6 +67,9 @@ class Config:
     healthy_availability_floor: float = env_float("HEALTHY_AVAILABILITY_FLOOR", 1.1)
     completion_priority_progress: float = env_float("COMPLETION_PRIORITY_PROGRESS", 0.8)
     completion_priority_remaining_gb: float = env_float("COMPLETION_PRIORITY_REMAINING_GB", 8)
+    completion_reserve_progress: float = env_float("COMPLETION_RESERVE_PROGRESS", 0.95)
+    completion_reserve_remaining_gb: float = env_float("COMPLETION_RESERVE_REMAINING_GB", 4)
+    partial_progress_priority_floor: float = env_float("PARTIAL_PROGRESS_PRIORITY_FLOOR", 0.25)
     probe_rotation_seconds: int = env_int("PROBE_ROTATION_SECONDS", 120)
     probe_quarantine_seconds: int = env_int("PROBE_QUARANTINE_SECONDS", 900)
     stall_probe_seconds: int = env_int("STALL_PROBE_SECONDS", 240)
@@ -76,16 +79,34 @@ class Config:
     arr_history_lookback_hours: int = env_int("ARR_HISTORY_LOOKBACK_HOURS", 168)
     retro_repair_lookback_hours: int = env_int("RETRO_REPAIR_LOOKBACK_HOURS", 720)
     retro_repair_stale_hours: int = env_int("RETRO_REPAIR_STALE_HOURS", 24)
+    queue_integrity_stale_hours: int = env_int("QUEUE_INTEGRITY_STALE_HOURS", 6)
+    queue_missing_download_stale_hours: int = env_int("QUEUE_MISSING_DOWNLOAD_STALE_HOURS", 2)
+    arr_log_signal_lookback_hours: int = env_int("ARR_LOG_SIGNAL_LOOKBACK_HOURS", 168)
+    arr_log_signal_sample_limit: int = env_int("ARR_LOG_SIGNAL_SAMPLE_LIMIT", 12)
     import_grace_hours: int = env_int("IMPORT_GRACE_HOURS", 6)
     broken_download_grace_hours: int = env_int("BROKEN_DOWNLOAD_GRACE_HOURS", 2)
-    max_arr_commands_per_cycle: int = env_int("MAX_ARR_COMMANDS_PER_CYCLE", 1)
+    max_arr_commands_per_cycle: int = env_int("MAX_ARR_COMMANDS_PER_CYCLE", 2)
     min_arr_command_interval_seconds: int = env_int("MIN_ARR_COMMAND_INTERVAL_SECONDS", 21600)
-    arr_global_command_interval_seconds: int = env_int("ARR_GLOBAL_COMMAND_INTERVAL_SECONDS", 3600)
+    arr_global_command_interval_seconds: int = env_int("ARR_GLOBAL_COMMAND_INTERVAL_SECONDS", 300)
+    broken_arr_command_interval_seconds: int = env_int("BROKEN_ARR_COMMAND_INTERVAL_SECONDS", 900)
+    completed_arr_command_interval_seconds: int = env_int("COMPLETED_ARR_COMMAND_INTERVAL_SECONDS", 3600)
+    retro_arr_command_interval_seconds: int = env_int("RETRO_ARR_COMMAND_INTERVAL_SECONDS", 1800)
+    backlog_arr_command_interval_seconds: int = env_int("BACKLOG_ARR_COMMAND_INTERVAL_SECONDS", 3600)
+    urgent_arr_global_command_interval_seconds: int = env_int("URGENT_ARR_GLOBAL_COMMAND_INTERVAL_SECONDS", 60)
+    retro_arr_global_command_interval_seconds: int = env_int("RETRO_ARR_GLOBAL_COMMAND_INTERVAL_SECONDS", 120)
+    backlog_arr_global_command_interval_seconds: int = env_int("BACKLOG_ARR_GLOBAL_COMMAND_INTERVAL_SECONDS", 180)
+    broken_arr_retry_reset_seconds: int = env_int("BROKEN_ARR_RETRY_RESET_SECONDS", 43200)
+    completed_arr_retry_reset_seconds: int = env_int("COMPLETED_ARR_RETRY_RESET_SECONDS", 43200)
+    retro_arr_retry_reset_seconds: int = env_int("RETRO_ARR_RETRY_RESET_SECONDS", 86400)
+    backlog_arr_retry_reset_seconds: int = env_int("BACKLOG_ARR_RETRY_RESET_SECONDS", 172800)
+    arr_queue_cleanup_retry_reset_seconds: int = env_int("ARR_QUEUE_CLEANUP_RETRY_RESET_SECONDS", 86400)
+    arr_command_budget_emergency: int = env_int("ARR_COMMAND_BUDGET_EMERGENCY", 1)
+    arr_command_budget_repair_burst: int = env_int("ARR_COMMAND_BUDGET_REPAIR_BURST", 3)
     max_arr_search_retries_broken: int = env_int("MAX_ARR_SEARCH_RETRIES_BROKEN", 2)
     max_arr_search_retries_orphan: int = env_int("MAX_ARR_SEARCH_RETRIES_ORPHAN", 1)
-    max_arr_search_retries_queue_warning: int = env_int("MAX_ARR_SEARCH_RETRIES_QUEUE_WARNING", 2)
-    max_arr_search_retries_history: int = env_int("MAX_ARR_SEARCH_RETRIES_HISTORY", 1)
-    max_arr_search_retries_wanted: int = env_int("MAX_ARR_SEARCH_RETRIES_WANTED", 1)
+    max_arr_search_retries_queue_warning: int = env_int("MAX_ARR_SEARCH_RETRIES_QUEUE_WARNING", 3)
+    max_arr_search_retries_history: int = env_int("MAX_ARR_SEARCH_RETRIES_HISTORY", 2)
+    max_arr_search_retries_wanted: int = env_int("MAX_ARR_SEARCH_RETRIES_WANTED", 2)
     max_qbit_recovery_actions_per_cycle: int = env_int("MAX_QBIT_RECOVERY_ACTIONS_PER_CYCLE", 1)
     min_qbit_recovery_interval_seconds: int = env_int("MIN_QBIT_RECOVERY_INTERVAL_SECONDS", 7200)
     max_qbit_recovery_attempts_per_hash: int = env_int("MAX_QBIT_RECOVERY_ATTEMPTS_PER_HASH", 2)
@@ -401,9 +422,29 @@ class ArrHistoryCollector:
         with urllib.request.urlopen(url, timeout=20) as response:
             return json.loads(response.read().decode())
 
+    @staticmethod
+    def _int_value(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _page_complete(cls, payload: dict[str, Any], page: int, page_records: list[dict[str, Any]], page_size: int) -> bool:
+        total_pages = cls._int_value(payload.get("totalPages"))
+        if total_pages and total_pages > 0:
+            return page >= total_pages
+
+        total_records = cls._int_value(payload.get("totalRecords"))
+        if total_records is not None and total_records >= 0:
+            return page * page_size >= total_records
+
+        return len(page_records) < page_size
+
     def recent_events(self, lookback_hours: int) -> dict[str, dict[str, Any]]:
         cutoff = now_ts() - (lookback_hours * 3600)
         events: dict[str, dict[str, Any]] = {}
+        page_size = 200
 
         for app_name, meta in self.APPS.items():
             api_key = self.api_keys.get(app_name)
@@ -413,7 +454,7 @@ class ArrHistoryCollector:
             page = 1
             while True:
                 url = (
-                    f"{meta['base_url']}{meta['history_path']}?page={page}&pageSize=200"
+                    f"{meta['base_url']}{meta['history_path']}?page={page}&pageSize={page_size}"
                     f"&sortDirection=descending&sortKey=date{meta['include_suffix']}&apikey={api_key}"
                 )
                 payload = self._fetch_json(url)
@@ -438,7 +479,7 @@ class ArrHistoryCollector:
                     app_entry["latestImported"] = self._latest_by_type(app_entry["records"], "imported")
                     app_entry["latestGrabbed"] = self._latest_by_type(app_entry["records"], "grabbed")
 
-                if stop_paging or page >= payload.get("totalPages", page):
+                if stop_paging or self._page_complete(payload, page, records, page_size):
                     break
                 page += 1
 
@@ -446,6 +487,7 @@ class ArrHistoryCollector:
 
     def queue_records(self) -> dict[str, list[dict[str, Any]]]:
         snapshots: dict[str, list[dict[str, Any]]] = {}
+        page_size = 200
 
         for app_name, meta in self.APPS.items():
             api_key = self.api_keys.get(app_name)
@@ -456,7 +498,7 @@ class ArrHistoryCollector:
             page = 1
             while True:
                 url = (
-                    f"{meta['base_url']}/queue?page={page}&pageSize=200"
+                    f"{meta['base_url']}/queue?page={page}&pageSize={page_size}"
                     f"&sortDirection=ascending&sortKey=timeleft&apikey={api_key}"
                 )
                 payload = self._fetch_json(url)
@@ -464,7 +506,7 @@ class ArrHistoryCollector:
                 if not page_records:
                     break
                 records.extend(page_records)
-                if page >= payload.get("totalPages", page):
+                if self._page_complete(payload, page, page_records, page_size):
                     break
                 page += 1
 
@@ -474,6 +516,7 @@ class ArrHistoryCollector:
 
     def wanted_missing_records(self, app_names: tuple[str, ...] = ("radarr",)) -> dict[str, list[dict[str, Any]]]:
         snapshots: dict[str, list[dict[str, Any]]] = {}
+        page_size = 200
 
         for app_name in app_names:
             meta = self.APPS.get(app_name)
@@ -486,7 +529,7 @@ class ArrHistoryCollector:
                 page = 1
                 while True:
                     url = (
-                        f"{meta['base_url']}/wanted/missing?page={page}&pageSize=200"
+                        f"{meta['base_url']}/wanted/missing?page={page}&pageSize={page_size}"
                         f"&sortDirection=descending&sortKey=monitored&apikey={api_key}"
                     )
                     payload = self._fetch_json(url)
@@ -494,7 +537,7 @@ class ArrHistoryCollector:
                     if not page_records:
                         break
                     records.extend(page_records)
-                    if page >= payload.get("totalPages", page):
+                    if self._page_complete(payload, page, page_records, page_size):
                         break
                     page += 1
 
@@ -557,6 +600,101 @@ class ArrHistoryCollector:
         )
         with urllib.request.urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode())
+
+    def recent_log_signals(self) -> dict[str, dict[str, Any]]:
+        signal_patterns = {
+            "import-warning": (
+                "unable to import automatically",
+                "import blocked",
+                "import pending",
+                "no files found are eligible for import",
+                "unexpected considering the",
+                "was not found in the grabbed release",
+            ),
+            "download-warning": (
+                "download wasn't grabbed by",
+                "download client is unavailable",
+                "download client is not available",
+                "failed to import download",
+            ),
+            "missing-files": (
+                "missing files",
+                "missingfile",
+            ),
+        }
+        summaries: dict[str, dict[str, Any]] = {}
+        cutoff = now_ts() - (CONFIG.arr_log_signal_lookback_hours * 3600)
+        for app_name, meta in self.APPS.items():
+            log_dir = meta["config_path"].parent / "logs"
+            summary = {
+                "logDir": str(log_dir),
+                "filesScanned": 0,
+                "signalCounts": {},
+                "samples": [],
+            }
+            if not log_dir.exists():
+                summaries[app_name] = summary
+                continue
+            candidates = sorted(
+                [
+                    path
+                    for path in log_dir.iterdir()
+                    if path.is_file() and path.suffix.lower() in {".txt", ".log"}
+                ],
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for path in candidates:
+                try:
+                    if int(path.stat().st_mtime) < cutoff:
+                        continue
+                    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()[-1200:]
+                except Exception:
+                    continue
+                summary["filesScanned"] += 1
+                for line in lines:
+                    lower_line = line.lower()
+                    for signal_name, patterns in signal_patterns.items():
+                        if not any(pattern in lower_line for pattern in patterns):
+                            continue
+                        counts = summary["signalCounts"]
+                        counts[signal_name] = int(counts.get(signal_name, 0) or 0) + 1
+                        if len(summary["samples"]) < CONFIG.arr_log_signal_sample_limit:
+                            summary["samples"].append(
+                                {
+                                    "signal": signal_name,
+                                    "file": path.name,
+                                    "line": line.strip(),
+                                }
+                            )
+                        break
+            summaries[app_name] = summary
+        return summaries
+
+    def clear_queue_items(
+        self,
+        app_name: str,
+        queue_ids: list[int],
+        *,
+        remove_from_client: bool = False,
+        blocklist: bool = True,
+    ) -> list[dict[str, Any]]:
+        meta = self.APPS.get(app_name)
+        api_key = self.api_keys.get(app_name)
+        if not meta or not api_key:
+            return []
+
+        results: list[dict[str, Any]] = []
+        for queue_id in sorted({int(queue_id) for queue_id in queue_ids if int(queue_id) > 0}):
+            url = (
+                f"{meta['base_url']}/queue/{queue_id}?apikey={api_key}"
+                f"&removeFromClient={'true' if remove_from_client else 'false'}"
+                f"&blocklist={'true' if blocklist else 'false'}"
+            )
+            request = urllib.request.Request(url, method="DELETE")
+            with urllib.request.urlopen(request, timeout=20) as response:
+                results.append({"queueId": queue_id, "status": getattr(response, "status", 200)})
+        return results
 
     @staticmethod
     def _parse_ts(value: str | None) -> int | None:
@@ -653,6 +791,17 @@ def is_completion_priority(torrent: dict[str, Any]) -> bool:
     return progress_value(torrent) >= CONFIG.completion_priority_progress or remaining_gb <= CONFIG.completion_priority_remaining_gb
 
 
+def should_reserve_completion_priority_active(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    state = str(torrent.get("state") or "")
+    if state not in {"downloading", "forcedDL"}:
+        return False
+    if bool(stall_meta.get("longStalled")):
+        return False
+    progress = progress_value(torrent)
+    remaining_gb = gb_from_bytes(remaining_bytes(torrent))
+    return progress >= CONFIG.completion_reserve_progress or remaining_gb <= CONFIG.completion_reserve_remaining_gb
+
+
 def is_swarm_healthy(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     if is_missing_files_state(torrent) or not has_metadata(torrent):
         return False
@@ -685,6 +834,18 @@ def is_probe_rotation_candidate(torrent: dict[str, Any], stall_meta: dict[str, A
     if remaining_bytes(torrent) <= 0 or download_speed(torrent) > 0:
         return False
     return int(stall_meta.get("stalledSeconds", 0) or 0) >= CONFIG.probe_rotation_seconds
+
+
+def should_quarantine_probe_on_stop(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if bool(torrent.get("force_start")) and not CONFIG.manage_force_started:
+        return False
+    if not is_active_download_state(str(torrent.get("state") or "")):
+        return False
+    if remaining_bytes(torrent) <= 0:
+        return False
+    if download_speed(torrent) > 0:
+        return False
+    return True
 
 
 def prune_probe_quarantine(store: StateStore) -> dict[str, int]:
@@ -1013,6 +1174,8 @@ def should_reserve_active_download(torrent: dict[str, Any], stall_meta: dict[str
         return False
     if is_manageable(torrent):
         return False
+    if should_reserve_completion_priority_active(torrent, stall_meta):
+        return True
     if not bool(torrent.get("force_start", False)):
         return True
     if bool(stall_meta.get("longStalled")):
@@ -1070,8 +1233,9 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
     long_stalled = bool(stall_meta["longStalled"])
     probe_stalled = bool(stall_meta.get("probeStalled"))
     state = str(torrent.get("state") or "")
-    completion_priority = is_completion_priority(torrent)
     healthy_swarm = is_swarm_healthy(torrent, stall_meta)
+    dead_swarm = is_dead_swarm(torrent, stall_meta)
+    finish_bias = (not dead_swarm) and progress >= CONFIG.partial_progress_priority_floor
 
     viability_bucket = 0
     if is_missing_files_state(torrent):
@@ -1097,14 +1261,15 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
 
     if mode in {"emergency", "constrained", "focused"}:
         return (
-            viability_bucket,
+            0 if finish_bias else 1,
+            0 if (finish_bias and currently_moving) else 1,
+            -(progress if finish_bias else 0),
+            remaining if finish_bias else 0,
             0 if currently_moving else 1,
-            0 if completion_priority else 1,
+            viability_bucket,
             state_bucket,
             peer_signal,
             -availability,
-            -progress,
-            remaining,
             added_on,
         )
 
@@ -1116,6 +1281,59 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
         -progress,
         added_on,
     )
+
+
+def is_viable_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if download_speed(torrent) > 0:
+        return True
+    if is_swarm_healthy(torrent, stall_meta):
+        return True
+    if seed_count(torrent) > 0:
+        return True
+    return availability_value(torrent) >= 1.0
+
+
+def is_finish_priority_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if is_missing_files_state(torrent):
+        return False
+    if not has_metadata(torrent):
+        return False
+    if bool(stall_meta.get("longStalled")) or bool(stall_meta.get("probeStalled")):
+        return False
+    if is_dead_swarm(torrent, stall_meta):
+        return False
+
+    progress = progress_value(torrent)
+    if progress < CONFIG.partial_progress_priority_floor:
+        return False
+
+    if download_speed(torrent) > 0:
+        return True
+    if seed_count(torrent) > 0:
+        return True
+
+    return availability_value(torrent) > 0
+
+
+def is_best_effort_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if is_missing_files_state(torrent):
+        return False
+    if bool(stall_meta.get("longStalled")) or bool(stall_meta.get("probeStalled")):
+        return False
+    if download_speed(torrent) > 0:
+        return True
+    availability = availability_value(torrent)
+    seeds = seed_count(torrent)
+    progress = progress_value(torrent)
+    if seeds > 0:
+        return True
+    if availability >= 0.15:
+        return True
+    if progress >= 0.15 and availability > 0:
+        return True
+    if is_completion_priority(torrent) and progress >= 0.5 and availability > 0.05:
+        return True
+    return False
 
 
 def choose_allowed(
@@ -1161,8 +1379,17 @@ def choose_allowed(
         has_metadata = bool(torrent.get("has_metadata", True))
         unknown_size = not has_metadata or remaining <= 0
         next_projection = projected_bytes + max(remaining, 0)
+        stall_meta = stall_metadata.get(
+            torrent["hash"],
+            {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        )
 
         if not allowed:
+            finish_preferred = mode in {"emergency", "constrained", "focused"} and is_finish_priority_probe_candidate(
+                torrent, stall_meta
+            )
+            if not finish_preferred and not is_viable_probe_candidate(torrent, stall_meta):
+                continue
             allowed.append(torrent)
             projected_bytes = next_projection
             continue
@@ -1173,6 +1400,23 @@ def choose_allowed(
         if next_projection <= budget_bytes:
             allowed.append(torrent)
             projected_bytes = next_projection
+
+    if allowed or target <= 0:
+        return allowed
+
+    fallback_pool = [
+        torrent
+        for torrent in selection_pool
+        if is_best_effort_probe_candidate(
+            torrent,
+            stall_metadata.get(
+                torrent["hash"],
+                {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            ),
+        )
+    ]
+    if fallback_pool:
+        return [fallback_pool[0]]
 
     return allowed
 
@@ -1425,6 +1669,11 @@ def extract_arr_entity_id(app_name: str, record: dict[str, Any]) -> int:
     return 0
 
 
+def extract_arr_entity_ids(app_name: str, records: list[dict[str, Any]]) -> list[int]:
+    ids = sorted({extract_arr_entity_id(app_name, record) for record in records if extract_arr_entity_id(app_name, record) > 0})
+    return ids
+
+
 def build_arr_search_action_for_entity(
     app_name: str | None,
     entity_id: int,
@@ -1461,10 +1710,49 @@ def build_arr_search_action_for_entity(
     return action
 
 
+def build_arr_search_action_for_entities(
+    app_name: str | None,
+    entity_ids: list[int],
+    arr_collector: ArrHistoryCollector,
+    *,
+    reason: str | None = None,
+) -> dict[str, Any] | None:
+    if not app_name or app_name not in arr_collector.APPS:
+        return None
+    filtered_ids = sorted({int(entity_id) for entity_id in entity_ids if int(entity_id) > 0})
+    if not filtered_ids:
+        return None
+
+    payload_field = {
+        "radarr": "movieIds",
+        "sonarr": "episodeIds",
+        "lidarr": "albumIds",
+    }.get(app_name)
+    if not payload_field:
+        return None
+
+    action = {
+        "type": "arr-search-command",
+        "app": app_name,
+        "command": arr_collector.APPS[app_name]["search_command"],
+        payload_field: filtered_ids,
+    }
+    if reason:
+        action["reason"] = reason
+    action["actionKey"] = stable_signature(
+        {
+            "app": app_name,
+            "command": action["command"],
+            payload_field: action[payload_field],
+        }
+    )
+    return action
+
+
 def build_arr_search_action(app_name: str | None, grabbed_record: dict[str, Any], arr_collector: ArrHistoryCollector) -> dict[str, Any] | None:
-    return build_arr_search_action_for_entity(
+    return build_arr_search_action_for_entities(
         app_name,
-        extract_arr_entity_id(app_name, grabbed_record) if app_name else 0,
+        [extract_arr_entity_id(app_name, grabbed_record)] if app_name else [],
         arr_collector,
     )
 
@@ -1496,6 +1784,17 @@ def build_arr_queue_index(arr_queue: dict[str, list[dict[str, Any]]]) -> dict[st
     return index
 
 
+def build_arr_queue_download_index(arr_queue: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    index: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for app_name, records in arr_queue.items():
+        for record in records:
+            download_id = str(record.get("downloadId") or "").lower()
+            if not download_id:
+                continue
+            index.setdefault(app_name, {}).setdefault(download_id, []).append(record)
+    return index
+
+
 def queue_entry_has_file(app_name: str, record: dict[str, Any]) -> bool:
     field = {
         "radarr": "movieHasFile",
@@ -1505,6 +1804,23 @@ def queue_entry_has_file(app_name: str, record: dict[str, Any]) -> bool:
     if field and field in record:
         return bool(record.get(field))
     return bool(record.get("hasFile"))
+
+
+def flatten_status_messages(record: dict[str, Any]) -> list[str]:
+    flattened: list[str] = []
+    for item in record.get("statusMessages") or []:
+        if isinstance(item, dict):
+            messages = item.get("messages")
+            if isinstance(messages, list):
+                flattened.extend(str(message).strip() for message in messages if str(message).strip())
+            elif messages:
+                flattened.append(str(messages).strip())
+            title = item.get("title")
+            if title:
+                flattened.append(str(title).strip())
+        elif item:
+            flattened.append(str(item).strip())
+    return [message for message in flattened if message]
 
 
 def wanted_entry_has_file(app_name: str, record: dict[str, Any]) -> bool:
@@ -1552,9 +1868,86 @@ def retry_limit_for_reason(reason: str) -> int:
         "broken-salvage-fallback": CONFIG.max_arr_search_retries_broken,
         "completed-no-import": CONFIG.max_arr_search_retries_orphan,
         "queue-warning": CONFIG.max_arr_search_retries_queue_warning,
+        "queue-import-warning": CONFIG.max_arr_search_retries_queue_warning,
+        "queue-download-missing": CONFIG.max_arr_search_retries_queue_warning,
         "history-grabbed-no-import": CONFIG.max_arr_search_retries_history,
+        "history-failed-no-import": CONFIG.max_arr_search_retries_history,
         "wanted-missing-stale": CONFIG.max_arr_search_retries_wanted,
     }.get(reason, CONFIG.max_arr_search_retries_orphan)
+
+
+def reset_history_entry_if_stale(entry: dict[str, int], reset_seconds: int, now: int) -> dict[str, int]:
+    if reset_seconds <= 0:
+        return entry
+    last_triggered = int(entry.get("lastTriggeredAt", 0) or 0)
+    if last_triggered <= 0:
+        return entry
+    if now - last_triggered < reset_seconds:
+        return entry
+    return {"lastTriggeredAt": 0, "triggerCount": 0}
+
+
+def candidate_lane(candidate: dict[str, Any]) -> str:
+    return str(candidate.get("lane") or "")
+
+
+def arr_candidate_interval_seconds(candidate: dict[str, Any]) -> int:
+    lane = candidate_lane(candidate)
+    if lane == "broken-recovery":
+        return min(CONFIG.min_arr_command_interval_seconds, CONFIG.broken_arr_command_interval_seconds)
+    if lane == "completed-no-import":
+        return min(CONFIG.min_arr_command_interval_seconds, CONFIG.completed_arr_command_interval_seconds)
+    if lane == "retro-queue-warning":
+        return min(CONFIG.min_arr_command_interval_seconds, CONFIG.retro_arr_command_interval_seconds)
+    if lane.startswith("backlog-"):
+        return min(CONFIG.min_arr_command_interval_seconds, CONFIG.backlog_arr_command_interval_seconds)
+    return CONFIG.min_arr_command_interval_seconds
+
+
+def arr_candidate_retry_reset_seconds(candidate: dict[str, Any]) -> int:
+    lane = candidate_lane(candidate)
+    if lane == "broken-recovery":
+        return CONFIG.broken_arr_retry_reset_seconds
+    if lane == "completed-no-import":
+        return CONFIG.completed_arr_retry_reset_seconds
+    if lane == "retro-queue-warning":
+        return CONFIG.retro_arr_retry_reset_seconds
+    if lane.startswith("backlog-"):
+        return CONFIG.backlog_arr_retry_reset_seconds
+    return CONFIG.backlog_arr_retry_reset_seconds
+
+
+def arr_recovery_budget(report: dict[str, Any], free_bytes: int | None) -> int:
+    budget = max(1, CONFIG.max_arr_commands_per_cycle)
+    broken_count = len(report.get("brokenSuspects", []))
+    retro_count = len(report.get("retroRepairCandidates", []))
+    backlog_count = len(report.get("backlogCandidates", []))
+    free_gb = gb_from_bytes(free_bytes) if free_bytes is not None else None
+
+    if broken_count > 0:
+        return max(budget, CONFIG.arr_command_budget_repair_burst)
+    if retro_count > 0:
+        return max(budget, min(CONFIG.arr_command_budget_repair_burst, 2))
+    if backlog_count > 0:
+        if free_gb is not None and free_gb <= CONFIG.emergency_free_gb:
+            return max(1, min(budget, CONFIG.arr_command_budget_emergency))
+        return max(budget, min(CONFIG.arr_command_budget_repair_burst, 2))
+    return budget
+
+
+def arr_recovery_global_interval_seconds(report: dict[str, Any], free_bytes: int | None) -> int:
+    broken_count = len(report.get("brokenSuspects", []))
+    retro_count = len(report.get("retroRepairCandidates", []))
+    backlog_count = len(report.get("backlogCandidates", []))
+    free_gb = gb_from_bytes(free_bytes) if free_bytes is not None else None
+
+    if broken_count > 0:
+        return min(CONFIG.arr_global_command_interval_seconds, CONFIG.urgent_arr_global_command_interval_seconds)
+    if retro_count > 0:
+        return min(CONFIG.arr_global_command_interval_seconds, CONFIG.retro_arr_global_command_interval_seconds)
+    if backlog_count > 0 and (free_gb is None or free_gb > CONFIG.emergency_free_gb):
+        return min(CONFIG.arr_global_command_interval_seconds, CONFIG.backlog_arr_global_command_interval_seconds)
+    return CONFIG.arr_global_command_interval_seconds
 
 
 def qbit_recovery_limits(suspect: dict[str, Any]) -> tuple[int, int]:
@@ -1574,6 +1967,7 @@ def build_orphan_report(
     arr_events: dict[str, dict[str, Any]],
     arr_collector: ArrHistoryCollector,
     stall_metadata: dict[str, dict[str, Any]] | None = None,
+    arr_queue: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1582,11 +1976,13 @@ def build_orphan_report(
         "brokenSuspects": [],
         "retroRepairCandidates": [],
         "backlogCandidates": [],
+        "arrLogSignals": {},
     }
 
     grace_cutoff = now_ts() - (CONFIG.import_grace_hours * 3600)
     broken_cutoff = now_ts() - (CONFIG.broken_download_grace_hours * 3600)
     stall_metadata = stall_metadata or {}
+    queue_download_index = build_arr_queue_download_index(arr_queue or {})
 
     for torrent in torrents:
         download_id = str(torrent.get("hash") or "").lower()
@@ -1638,7 +2034,36 @@ def build_orphan_report(
                     else:
                         broken_suspect["recommendedActions"].append({"type": "qbit-delete", "deleteFiles": False})
 
-                    search_action = build_arr_search_action(app_name, grabbed, arr_collector) if grabbed else None
+                    queue_records = queue_download_index.get(app_name, {}).get(download_id, []) if app_name else []
+                    queue_entity_ids = extract_arr_entity_ids(app_name, queue_records) if app_name and queue_records else []
+                    if queue_entity_ids:
+                        broken_suspect["entityIds"] = queue_entity_ids
+                    queue_ids = sorted(
+                        {
+                            int(record.get("id", 0) or 0)
+                            for record in queue_records
+                            if int(record.get("id", 0) or 0) > 0
+                        }
+                    )
+                    if queue_ids:
+                        broken_suspect["queueIds"] = queue_ids
+                        broken_suspect["queueCleanupAction"] = {
+                            "type": "arr-queue-delete",
+                            "queueIds": queue_ids,
+                            "removeFromClient": False,
+                            "blocklist": True,
+                        }
+
+                    search_action = None
+                    if queue_entity_ids:
+                        search_action = build_arr_search_action_for_entities(
+                            app_name,
+                            queue_entity_ids,
+                            arr_collector,
+                            reason="broken-replace" if broken_suspect["recoveryMode"] == "replace" else "broken-salvage-fallback",
+                        )
+                    if not search_action and grabbed:
+                        search_action = build_arr_search_action(app_name, grabbed, arr_collector)
                     if search_action:
                         broken_suspect["recommendedActions"].append(search_action)
 
@@ -1686,7 +2111,11 @@ def build_retroactive_arr_repair_candidates(
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     seen_action_keys: set[str] = set()
-    stale_cutoff = now_ts() - (CONFIG.retro_repair_stale_hours * 3600)
+    stale_cutoff = now_ts() - (CONFIG.queue_integrity_stale_hours * 3600)
+    missing_download_cutoff = now_ts() - (CONFIG.queue_missing_download_stale_hours * 3600)
+    qbit_index = {str(torrent.get("hash") or "").lower(): torrent for torrent in torrents}
+    entity_index = build_arr_entity_event_index(arr_events)
+    queue_download_index = build_arr_queue_download_index(arr_queue)
 
     def add_candidate(candidate: dict[str, Any]) -> None:
         action = candidate.get("recommendedAction")
@@ -1696,48 +2125,92 @@ def build_retroactive_arr_repair_candidates(
         seen_action_keys.add(action_key)
         candidates.append(candidate)
 
-    for app_name, records in arr_queue.items():
-        for record in records:
-            entity_id = extract_arr_entity_id(app_name, record)
-            if entity_id <= 0:
+    for app_name, grouped_records in queue_download_index.items():
+        for download_id, records in grouped_records.items():
+            entity_ids = [
+                entity_id
+                for entity_id in extract_arr_entity_ids(app_name, records)
+                if not any(
+                    entity_index.get(app_name, {}).get(entity_id, {}).get("latestImported")
+                    or queue_entry_has_file(app_name, record)
+                    for record in records
+                    if extract_arr_entity_id(app_name, record) == entity_id
+                )
+            ]
+            if not entity_ids:
                 continue
 
-            tracked_status = str(record.get("trackedDownloadStatus") or "").lower()
-            status_messages = record.get("statusMessages") or []
-            reference_ts = first_parseable_ts(record.get("added"))
-            if tracked_status == "ok" and not status_messages:
+            representative = min(
+                records,
+                key=lambda record: first_parseable_ts(record.get("added")) or now_ts(),
+            )
+            tracked_statuses = {str(record.get("trackedDownloadStatus") or "").lower() for record in records}
+            tracked_states = {str(record.get("trackedDownloadState") or "").lower() for record in records}
+            statuses = {str(record.get("status") or "").lower() for record in records}
+            messages = sorted({message for record in records for message in flatten_status_messages(record)})
+            reference_ts = min(
+                [timestamp for timestamp in (first_parseable_ts(record.get("added")) for record in records) if timestamp > 0] or [0]
+            )
+            qbit_torrent = qbit_index.get(download_id)
+            if (
+                "ok" in tracked_statuses
+                and len(tracked_statuses) == 1
+                and not messages
+                and not ("downloading" in tracked_states and not qbit_torrent)
+            ):
                 continue
-            if reference_ts and reference_ts > stale_cutoff:
-                continue
-            if queue_entry_has_file(app_name, record):
+            if qbit_torrent and (is_missing_files_state(qbit_torrent) or is_stalled_recovery_candidate(qbit_torrent, {"probeStalled": True})):
                 continue
 
-            action = build_arr_search_action_for_entity(
+            reason = "queue-warning"
+            priority = 10
+            if {"importblocked", "importpending"} & tracked_states:
+                reason = "queue-import-warning"
+                priority = 8
+            elif "downloading" in tracked_states and not qbit_torrent:
+                reason = "queue-download-missing"
+                priority = 9
+
+            cutoff = missing_download_cutoff if reason == "queue-download-missing" else stale_cutoff
+            if reference_ts and reference_ts > cutoff:
+                continue
+
+            action = build_arr_search_action_for_entities(
                 app_name,
-                entity_id,
+                entity_ids,
                 arr_collector,
-                reason="queue-warning",
+                reason=reason,
             )
             if not action:
                 continue
 
-            add_candidate(
-                {
-                    "app": app_name,
-                    "entityId": entity_id,
-                    "title": record.get("title") or record.get("sourceTitle"),
-                    "lane": "retro-queue-warning",
-                    "reason": "queue-warning",
-                    "priority": 10,
-                    "maxRetries": CONFIG.max_arr_search_retries_queue_warning,
-                    "referenceTs": reference_ts,
-                    "trackedDownloadStatus": record.get("trackedDownloadStatus"),
-                    "trackedDownloadState": record.get("trackedDownloadState"),
-                    "downloadId": str(record.get("downloadId") or "").lower(),
-                    "statusMessages": status_messages,
-                    "recommendedAction": action,
+            candidate = {
+                "app": app_name,
+                "entityId": entity_ids[0],
+                "entityIds": entity_ids,
+                "queueIds": sorted({int(record.get("id", 0) or 0) for record in records if int(record.get("id", 0) or 0) > 0}),
+                "title": representative.get("title") or representative.get("sourceTitle"),
+                "lane": "retro-queue-warning",
+                "reason": reason,
+                "priority": priority,
+                "maxRetries": CONFIG.max_arr_search_retries_queue_warning,
+                "referenceTs": reference_ts,
+                "trackedDownloadStatus": representative.get("trackedDownloadStatus"),
+                "trackedDownloadState": representative.get("trackedDownloadState"),
+                "downloadId": download_id,
+                "statusMessages": messages,
+                "recommendedAction": action,
+            }
+            if candidate["queueIds"] and reason in {"queue-import-warning", "queue-download-missing"}:
+                candidate["queueCleanupAction"] = {
+                    "type": "arr-queue-delete",
+                    "queueIds": candidate["queueIds"],
+                    "removeFromClient": False,
+                    "blocklist": True,
                 }
-            )
+            if qbit_torrent and (not is_incomplete(qbit_torrent) or is_missing_files_state(qbit_torrent)):
+                candidate["cleanupAction"] = {"type": "qbit-delete", "deleteFiles": False}
+            add_candidate(candidate)
 
     candidates.sort(key=lambda item: (int(item.get("priority", 99)), int(item.get("referenceTs", 0) or 0)))
     return candidates
@@ -1757,57 +2230,86 @@ def build_backlog_candidates(
     qbit_hashes = {str(torrent.get("hash") or "").lower() for torrent in torrents}
     stale_cutoff = now_ts() - (CONFIG.retro_repair_stale_hours * 3600)
     lookback_cutoff = now_ts() - (CONFIG.retro_repair_lookback_hours * 3600)
+    history_groups: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     for app_name, entities in entity_index.items():
         queued_entities = set(queue_index.get(app_name, {}))
         for entity_id, entity_data in entities.items():
             imported = entity_data.get("latestImported")
             grabbed = entity_data.get("latestGrabbed")
-            if imported or not grabbed:
+            failed = entity_data.get("latestFailed")
+            if imported or (not grabbed and not failed):
                 continue
 
-            reference_ts = first_parseable_ts(grabbed.get("date"))
+            failed_newer_than_grabbed = bool(
+                failed
+                and (
+                    not grabbed
+                    or first_parseable_ts(failed.get("date")) >= first_parseable_ts(grabbed.get("date"))
+                )
+            )
+            active_record = failed if failed_newer_than_grabbed else grabbed
+            if active_record is None:
+                continue
+            reference_ts = first_parseable_ts(active_record.get("date"))
             if reference_ts <= 0 or reference_ts > stale_cutoff:
                 continue
             if entity_id in queued_entities:
                 continue
 
-            download_id = str(grabbed.get("downloadId") or "").lower()
+            download_id = str(active_record.get("downloadId") or "").lower()
             if download_id and download_id in qbit_hashes:
                 continue
 
-            action = build_arr_search_action_for_entity(
-                app_name,
-                entity_id,
-                arr_collector,
-                reason="history-grabbed-no-import",
-            )
-            if not action:
-                continue
-
-            action_key = str(action.get("actionKey") or "")
-            if action_key in seen_action_keys:
-                continue
-            seen_action_keys.add(action_key)
-
-            candidates.append(
+            reason = "history-failed-no-import" if failed_newer_than_grabbed else "history-grabbed-no-import"
+            group_key = (app_name, download_id or f"entity:{entity_id}", reason)
+            group = history_groups.setdefault(
+                group_key,
                 {
                     "app": app_name,
-                    "entityId": entity_id,
-                    "title": grabbed.get("sourceTitle"),
+                    "entityIds": [],
+                    "title": active_record.get("sourceTitle"),
                     "lane": "backlog-history",
-                    "reason": "history-grabbed-no-import",
-                    "priority": 25,
+                    "reason": reason,
+                    "priority": 20 if failed_newer_than_grabbed else 25,
                     "maxRetries": CONFIG.max_arr_search_retries_history,
                     "referenceTs": reference_ts,
                     "downloadId": download_id,
                     "grabbedEvent": {
-                        "eventType": grabbed.get("eventType"),
-                        "date": grabbed.get("date"),
+                        "eventType": active_record.get("eventType"),
+                        "date": active_record.get("date"),
                     },
-                    "recommendedAction": action,
-                }
+                },
             )
+            group["entityIds"].append(entity_id)
+            group["referenceTs"] = min(int(group.get("referenceTs", reference_ts) or reference_ts), reference_ts)
+
+    for group in history_groups.values():
+        entity_ids = sorted({int(entity_id) for entity_id in group.get("entityIds", []) if int(entity_id) > 0})
+        if not entity_ids:
+            continue
+        action = build_arr_search_action_for_entities(
+            str(group.get("app") or ""),
+            entity_ids,
+            arr_collector,
+            reason=str(group.get("reason") or "history-grabbed-no-import"),
+        )
+        if not action:
+            continue
+
+        action_key = str(action.get("actionKey") or "")
+        if action_key in seen_action_keys:
+            continue
+        seen_action_keys.add(action_key)
+
+        candidates.append(
+            {
+                **group,
+                "entityId": entity_ids[0],
+                "entityIds": entity_ids,
+                "recommendedAction": action,
+            }
+        )
 
     for app_name, records in arr_wanted.items():
         for record in records:
@@ -1867,6 +2369,7 @@ def maybe_apply_arr_recovery(
     arr_collector: ArrHistoryCollector,
     client: QBClient,
     report: dict[str, Any],
+    free_bytes: int | None = None,
 ) -> dict[str, Any]:
     dispatch = {"triggered": [], "skipped": []}
     report["arrActions"] = dispatch
@@ -1875,11 +2378,18 @@ def maybe_apply_arr_recovery(
         return dispatch
 
     history = store.runtime.setdefault("arr_command_history", {})
-    action_budget = max(1, CONFIG.max_arr_commands_per_cycle)
+    queue_cleanup_history = store.runtime.setdefault("arr_queue_cleanup_history", {})
+    action_budget = arr_recovery_budget(report, free_bytes)
     triggered = 0
     now = now_ts()
     candidates: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
     qbit_recovery_history = store.runtime.get("qbit_recovery_history", {})
+    effective_global_interval = arr_recovery_global_interval_seconds(report, free_bytes)
+    dispatch["policy"] = {
+        "actionBudget": action_budget,
+        "globalIntervalSeconds": effective_global_interval,
+        "freeGb": round(gb_from_bytes(free_bytes), 2) if free_bytes is not None else None,
+    }
 
     for suspect in report.get("brokenSuspects", []):
         if not CONFIG.allow_broken_download_recovery:
@@ -1899,6 +2409,7 @@ def maybe_apply_arr_recovery(
                     (item for item in suspect.get("recommendedActions", []) if item.get("type") == "qbit-delete"),
                     None,
                 )
+                candidate["queueCleanupAction"] = candidate.get("queueCleanupAction")
                 candidate["reason"] = (
                     "broken-salvage-fallback"
                     if suspect.get("recoveryMode") == "salvage"
@@ -1927,11 +2438,10 @@ def maybe_apply_arr_recovery(
     candidates.sort(key=lambda item: (item[0], int(item[1].get("referenceTs", item[1].get("completionOn", 0)) or 0)))
 
     global_last_triggered = int(store.runtime.get("arr_last_command_at", 0) or 0)
-    global_remaining = max(0, CONFIG.arr_global_command_interval_seconds - (now - global_last_triggered))
+    global_remaining = max(0, effective_global_interval - (now - global_last_triggered))
     if candidates and global_last_triggered and global_remaining > 0:
         dispatch["globalCooldownRemainingSeconds"] = global_remaining
         dispatch["skipped"].append({"reason": "global-cooldown", "remainingSeconds": global_remaining})
-        return dispatch
 
     seen_action_keys: set[str] = set()
     for _, candidate, action in candidates:
@@ -1944,9 +2454,29 @@ def maybe_apply_arr_recovery(
             dispatch["skipped"].append({"actionKey": action_key, "reason": "budget-exhausted"})
             continue
 
-        history_entry = normalize_action_history_entry(history.get(action_key))
+        queue_cleanup_performed = False
+        queue_cleanup_key = ""
+        retry_reset_seconds = arr_candidate_retry_reset_seconds(candidate)
+        action_interval_seconds = arr_candidate_interval_seconds(candidate)
+        history_entry = reset_history_entry_if_stale(
+            normalize_action_history_entry(history.get(action_key)),
+            retry_reset_seconds,
+            now,
+        )
         retry_limit = int(candidate.get("maxRetries", retry_limit_for_reason(str(candidate.get("reason") or ""))) or 0)
         if retry_limit > 0 and history_entry["triggerCount"] >= retry_limit:
+            if queue_cleanup_performed:
+                triggered += 1
+                dispatch["triggered"].append(
+                    {
+                        "actionKey": queue_cleanup_key or action_key,
+                        "app": candidate.get("app"),
+                        "lane": candidate.get("lane"),
+                        "title": candidate.get("title"),
+                        "reason": f"{candidate.get('reason')}:queue-cleanup",
+                        "queueCleanupTriggered": candidate.get("queueCleanupTriggered"),
+                    }
+                )
             dispatch["skipped"].append(
                 {
                     "actionKey": action_key,
@@ -1957,13 +2487,85 @@ def maybe_apply_arr_recovery(
             )
             continue
 
+        queue_cleanup_action = candidate.get("queueCleanupAction")
+        if isinstance(queue_cleanup_action, dict):
+            queue_cleanup_key = stable_signature(
+                {
+                    "app": candidate.get("app"),
+                    "queueIds": [int(queue_id) for queue_id in queue_cleanup_action.get("queueIds", [])],
+                    "blocklist": bool(queue_cleanup_action.get("blocklist", True)),
+                    "removeFromClient": bool(queue_cleanup_action.get("removeFromClient", False)),
+                }
+            )
+            cleanup_history_entry = reset_history_entry_if_stale(
+                normalize_action_history_entry(queue_cleanup_history.get(queue_cleanup_key)),
+                CONFIG.arr_queue_cleanup_retry_reset_seconds,
+                now,
+            )
+            cleanup_retry_limit = 1
+            cleanup_last_triggered = cleanup_history_entry["lastTriggeredAt"]
+            if cleanup_retry_limit > 0 and cleanup_history_entry["triggerCount"] >= cleanup_retry_limit:
+                dispatch["skipped"].append({"actionKey": queue_cleanup_key, "reason": "queue-cleanup-retry-limit"})
+            elif cleanup_last_triggered and now - cleanup_last_triggered < action_interval_seconds:
+                dispatch["skipped"].append(
+                    {
+                        "actionKey": queue_cleanup_key,
+                        "reason": "queue-cleanup-cooldown",
+                        "remainingSeconds": action_interval_seconds - (now - cleanup_last_triggered),
+                    }
+                )
+            else:
+                try:
+                    queue_cleanup_result = arr_collector.clear_queue_items(
+                        str(candidate.get("app") or ""),
+                        [int(queue_id) for queue_id in queue_cleanup_action.get("queueIds", [])],
+                        remove_from_client=bool(queue_cleanup_action.get("removeFromClient", False)),
+                        blocklist=bool(queue_cleanup_action.get("blocklist", True)),
+                    )
+                    if queue_cleanup_result:
+                        candidate["queueCleanupTriggered"] = queue_cleanup_result
+                        queue_cleanup_history[queue_cleanup_key] = {
+                            "lastTriggeredAt": now,
+                            "triggerCount": cleanup_history_entry["triggerCount"] + 1,
+                        }
+                        queue_cleanup_performed = True
+                except Exception as exc:
+                    dispatch["skipped"].append({"actionKey": queue_cleanup_key, "reason": "queue-cleanup-error", "error": str(exc)})
+
+        if global_remaining > 0:
+            if queue_cleanup_performed:
+                triggered += 1
+                dispatch["triggered"].append(
+                    {
+                        "actionKey": queue_cleanup_key or action_key,
+                        "app": candidate.get("app"),
+                        "lane": candidate.get("lane"),
+                        "title": candidate.get("title"),
+                        "reason": f"{candidate.get('reason')}:queue-cleanup",
+                        "queueCleanupTriggered": candidate.get("queueCleanupTriggered"),
+                    }
+                )
+            continue
+
         last_triggered = history_entry["lastTriggeredAt"]
-        if last_triggered and now - last_triggered < CONFIG.min_arr_command_interval_seconds:
+        if last_triggered and now - last_triggered < action_interval_seconds:
+            if queue_cleanup_performed:
+                triggered += 1
+                dispatch["triggered"].append(
+                    {
+                        "actionKey": queue_cleanup_key or action_key,
+                        "app": candidate.get("app"),
+                        "lane": candidate.get("lane"),
+                        "title": candidate.get("title"),
+                        "reason": f"{candidate.get('reason')}:queue-cleanup",
+                        "queueCleanupTriggered": candidate.get("queueCleanupTriggered"),
+                    }
+                )
             dispatch["skipped"].append(
                 {
                     "actionKey": action_key,
                     "reason": "cooldown",
-                    "remainingSeconds": CONFIG.min_arr_command_interval_seconds - (now - last_triggered),
+                    "remainingSeconds": action_interval_seconds - (now - last_triggered),
                 }
             )
             continue
@@ -1995,6 +2597,7 @@ def maybe_apply_arr_recovery(
                         "lane": candidate.get("lane"),
                         "title": candidate.get("title"),
                         "reason": candidate.get("reason"),
+                        "queueCleanupTriggered": candidate.get("queueCleanupTriggered"),
                         "cleanupTriggered": candidate.get("cleanupTriggered"),
                     }
                 )
@@ -2335,7 +2938,7 @@ def maybe_apply_torrent_control(
         torrent_hash
         for torrent_hash in to_stop
         if torrent_hash in candidate_by_hash
-        and is_probe_rotation_candidate(
+        and should_quarantine_probe_on_stop(
             candidate_by_hash[torrent_hash],
             stall_metadata.get(
                 torrent_hash,
@@ -2458,7 +3061,9 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
     arr_events = arr_collector.recent_events(arr_history_hours)
     arr_queue = arr_collector.queue_records()
     arr_wanted = arr_collector.wanted_missing_records(("radarr", "sonarr", "lidarr"))
-    orphan_report = build_orphan_report(torrents, arr_events, arr_collector, stall_metadata)
+    arr_log_signals = arr_collector.recent_log_signals()
+    orphan_report = build_orphan_report(torrents, arr_events, arr_collector, stall_metadata, arr_queue=arr_queue)
+    orphan_report["arrLogSignals"] = arr_log_signals
     orphan_report["retroRepairCandidates"] = build_retroactive_arr_repair_candidates(
         torrents,
         arr_events,
@@ -2473,7 +3078,7 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         arr_collector,
     )
     maybe_apply_qbit_recovery(store, qbit, orphan_report)
-    maybe_apply_arr_recovery(store, arr_collector, qbit, orphan_report)
+    maybe_apply_arr_recovery(store, arr_collector, qbit, orphan_report, free_bytes)
     store.write_orphan_report(orphan_report)
 
     snapshot = {
@@ -2544,6 +3149,13 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         "arrAudit": arr_status,
         "arrQueueAudit": {app: len(records) for app, records in arr_queue.items()},
         "arrWantedAudit": {app: len(records) for app, records in arr_wanted.items()},
+        "arrLogAudit": {
+            app: {
+                "filesScanned": int(summary.get("filesScanned", 0) or 0),
+                "signalCounts": summary.get("signalCounts", {}),
+            }
+            for app, summary in arr_log_signals.items()
+        },
         "actions": {
             "start": to_start,
             "stop": to_stop,
@@ -2574,6 +3186,10 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
             "brokenCount": len(orphan_report["brokenSuspects"]),
             "retroRepairCount": len(orphan_report["retroRepairCandidates"]),
             "backlogCount": len(orphan_report["backlogCandidates"]),
+            "arrLogSignalCount": sum(
+                sum(int(value or 0) for value in (summary.get("signalCounts") or {}).values())
+                for summary in arr_log_signals.values()
+            ),
             "qbitRecoveryTriggered": len(orphan_report.get("qbitRecoveryActions", {}).get("triggered", [])),
             "arrRecoveryTriggered": len(orphan_report.get("arrActions", {}).get("triggered", [])),
             "reportPath": str(ORPHAN_REPORT_PATH),

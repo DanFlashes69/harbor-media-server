@@ -530,6 +530,45 @@ class OrchestratorScenarioTests(unittest.TestCase):
         self.assertEqual(len(weak_reserved), 1)
         self.assertEqual(desired, 1)
 
+    def test_near_complete_force_started_download_reserves_capacity_even_when_slow(self) -> None:
+        candidates = [
+            make_torrent(
+                "managed1",
+                "Managed One",
+                state="queuedDL",
+                progress=0.45,
+                amount_left=5 * 1024**3,
+                num_seeds=20,
+                availability=12.0,
+            ),
+        ]
+        near_complete_forced = make_torrent(
+            "forced-near-complete",
+            "Near Complete Forced",
+            state="forcedDL",
+            progress=0.987,
+            amount_left=400 * 1024**2,
+            dlspeed=12_000,
+            num_seeds=1,
+            availability=2.0,
+        )
+        near_complete_forced["force_start"] = True
+        stall = {torrent["hash"]: {"stalledSeconds": 0, "longStalled": False} for torrent in candidates}
+        reserved = orch.reserved_active_downloads([near_complete_forced], {})
+        weak_reserved = orch.weak_reserved_active_downloads([near_complete_forced], {})
+        metrics = orch.collect_workload_metrics(candidates, stall)
+        desired_total = orch.target_active_downloads(
+            "emergency",
+            candidates,
+            int(12 * 1024**3),
+            stall,
+            metrics,
+        )
+        desired = orch.managed_active_download_budget(desired_total, len(reserved), len(candidates), len(weak_reserved))
+        self.assertEqual(len(reserved), 1)
+        self.assertEqual(weak_reserved, [])
+        self.assertEqual(desired, 0)
+
     def test_choose_allowed_never_exceeds_budget_after_first_pick(self) -> None:
         candidates = [
             make_torrent("a", "A", progress=0.95, amount_left=2 * 1024**3, num_seeds=2, availability=2.0),
@@ -619,6 +658,125 @@ class OrchestratorScenarioTests(unittest.TestCase):
         allowed = orch.choose_allowed(FakeStore(), [stalled_active], "constrained", int(30 * 1024**3), stall, 1)
         self.assertEqual([torrent["hash"] for torrent in allowed], ["stalled"])
 
+    def test_choose_allowed_returns_empty_when_only_dead_zero_seed_probes_exist(self) -> None:
+        dead_probe = make_torrent(
+            "dead",
+            "Dead Probe",
+            state="stoppedDL",
+            dlspeed=0,
+            progress=0.05,
+            amount_left=1 * 1024**3,
+            num_seeds=0,
+            availability=0.04,
+            category="sonarr",
+        )
+        stall = {
+            "dead": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(FakeStore(), [dead_probe], "constrained", int(30 * 1024**3), stall, 1)
+        self.assertEqual(allowed, [])
+
+    def test_choose_allowed_uses_best_effort_fallback_when_no_healthy_probe_exists(self) -> None:
+        partial = make_torrent(
+            "partial",
+            "Partial Recovery Candidate",
+            state="stoppedDL",
+            dlspeed=0,
+            progress=0.22,
+            amount_left=3 * 1024**3,
+            num_seeds=0,
+            availability=0.22,
+            category="radarr",
+        )
+        dead = make_torrent(
+            "dead",
+            "Dead Candidate",
+            state="stoppedDL",
+            dlspeed=0,
+            progress=0.0,
+            amount_left=8 * 1024**3,
+            num_seeds=0,
+            availability=0.0,
+            category="sonarr",
+        )
+        stall = {
+            "partial": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "dead": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(FakeStore(), [dead, partial], "emergency", int(12 * 1024**3), stall, 1)
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["partial"])
+
+    def test_low_space_selection_prefers_more_finished_partial_over_less_finished_healthier_candidate(self) -> None:
+        more_finished = make_torrent(
+            "more-finished",
+            "More Finished",
+            state="stoppedDL",
+            progress=0.31,
+            amount_left=16 * 1024**3,
+            num_seeds=0,
+            availability=0.31,
+            category="radarr",
+        )
+        less_finished_healthier = make_torrent(
+            "less-finished",
+            "Less Finished But Healthier",
+            state="stoppedDL",
+            progress=0.18,
+            amount_left=2.5 * 1024**3,
+            num_seeds=3,
+            availability=3.2,
+            category="radarr",
+        )
+        stall = {
+            "more-finished": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "less-finished": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(
+            FakeStore(),
+            [less_finished_healthier, more_finished],
+            "emergency",
+            int(12 * 1024**3),
+            stall,
+            1,
+        )
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["more-finished"])
+
+    def test_low_space_selection_replaces_active_less_finished_torrent_with_more_finished_partial(self) -> None:
+        active_less_finished = make_torrent(
+            "active-less-finished",
+            "Active Less Finished",
+            state="downloading",
+            dlspeed=900 * 1024,
+            progress=0.18,
+            amount_left=2.5 * 1024**3,
+            num_seeds=3,
+            availability=3.2,
+            category="radarr",
+        )
+        more_finished = make_torrent(
+            "more-finished",
+            "More Finished",
+            state="stoppedDL",
+            progress=0.31,
+            amount_left=16 * 1024**3,
+            num_seeds=0,
+            availability=0.31,
+            category="radarr",
+        )
+        stall = {
+            "active-less-finished": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "more-finished": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(
+            FakeStore(),
+            [active_less_finished, more_finished],
+            "emergency",
+            int(12 * 1024**3),
+            stall,
+            1,
+        )
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["more-finished"])
+
     def test_maybe_apply_torrent_control_quarantines_rotated_probe(self) -> None:
         store = FakeStore()
         client = FakeQBClient()
@@ -644,6 +802,35 @@ class OrchestratorScenarioTests(unittest.TestCase):
             self.assertTrue(changed)
             self.assertEqual(client.stopped, [["stalled"]])
             self.assertIn("stalled", store.runtime["probe_quarantine_until"])
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_torrent_control", original_allow)
+
+    def test_maybe_apply_torrent_control_quarantines_replaced_nonmoving_probe(self) -> None:
+        store = FakeStore()
+        client = FakeQBClient()
+        torrent = make_torrent(
+            "probe",
+            "Replaced Probe",
+            state="stalledDL",
+            dlspeed=0,
+            progress=0.15,
+            amount_left=1 * 1024**3,
+            num_seeds=0,
+            availability=0.04,
+        )
+        stall = {
+            "probe": {"stalledSeconds": 30, "probeStalled": False, "longStalled": False},
+        }
+        original_observe = orch.CONFIG.observe_only
+        original_allow = orch.CONFIG.allow_torrent_control
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_torrent_control", True)
+            changed = orch.maybe_apply_torrent_control(store, client, [torrent], stall, ["probe"], [], True)
+            self.assertTrue(changed)
+            self.assertEqual(client.stopped, [["probe"]])
+            self.assertIn("probe", store.runtime["probe_quarantine_until"])
         finally:
             object.__setattr__(orch.CONFIG, "observe_only", original_observe)
             object.__setattr__(orch.CONFIG, "allow_torrent_control", original_allow)
@@ -727,6 +914,59 @@ class OrchestratorScenarioTests(unittest.TestCase):
         actions = report["brokenSuspects"][0]["recommendedActions"]
         self.assertTrue(any(action.get("type") == "qbit-delete" for action in actions))
         self.assertTrue(any(action.get("type") == "arr-search-command" for action in actions))
+
+    def test_missing_files_recovery_uses_queue_mapping_when_history_is_missing(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        torrent = make_torrent(
+            "recover-queue-map",
+            "Queue Mapped Missing",
+            state="missingFiles",
+            category="sonarr",
+            amount_left=0,
+            progress=0.0,
+            num_seeds=0,
+            availability=0.0,
+            added_on=orch.now_ts() - 10_000,
+        )
+        report = orch.build_orphan_report(
+            [torrent],
+            {},
+            arr_collector,
+            arr_queue={
+                "sonarr": [
+                    {
+                        "id": 101,
+                        "episodeId": 9001,
+                        "downloadId": "recover-queue-map",
+                        "title": "Queue Mapped Missing",
+                        "added": "2026-03-27T00:00:00Z",
+                        "trackedDownloadStatus": "ok",
+                        "trackedDownloadState": "downloading",
+                        "status": "warning",
+                        "episodeHasFile": False,
+                    },
+                    {
+                        "id": 102,
+                        "episodeId": 9002,
+                        "downloadId": "recover-queue-map",
+                        "title": "Queue Mapped Missing",
+                        "added": "2026-03-27T00:00:00Z",
+                        "trackedDownloadStatus": "ok",
+                        "trackedDownloadState": "downloading",
+                        "status": "warning",
+                        "episodeHasFile": False,
+                    },
+                ]
+            },
+        )
+        self.assertEqual(len(report["brokenSuspects"]), 1)
+        suspect = report["brokenSuspects"][0]
+        self.assertEqual(suspect["entityIds"], [9001, 9002])
+        self.assertEqual(suspect["queueCleanupAction"]["queueIds"], [101, 102])
+        actions = suspect["recommendedActions"]
+        search_actions = [action for action in actions if action.get("type") == "arr-search-command"]
+        self.assertEqual(len(search_actions), 1)
+        self.assertEqual(search_actions[0]["episodeIds"], [9001, 9002])
 
     def test_missing_files_salvage_recommends_qbit_recovery_first(self) -> None:
         arr_collector = orch.ArrHistoryCollector()
@@ -877,8 +1117,69 @@ class OrchestratorScenarioTests(unittest.TestCase):
             arr_collector,
         )
         self.assertEqual(len(candidate), 1)
-        self.assertEqual(candidate[0]["reason"], "queue-warning")
+        self.assertEqual(candidate[0]["reason"], "queue-import-warning")
         self.assertEqual(candidate[0]["recommendedAction"]["command"], "EpisodeSearch")
+
+    def test_queue_warning_repair_groups_multi_episode_download(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        candidates = orch.build_retroactive_arr_repair_candidates(
+            [],
+            {},
+            {
+                "sonarr": [
+                    {
+                        "episodeId": 101,
+                        "title": "Pack Download",
+                        "downloadId": "PACK123",
+                        "added": "2026-03-27T00:00:00Z",
+                        "trackedDownloadStatus": "warning",
+                        "trackedDownloadState": "importBlocked",
+                        "statusMessages": [{"messages": ["Episode 1 was unexpected"]}],
+                        "episodeHasFile": False,
+                    },
+                    {
+                        "episodeId": 102,
+                        "title": "Pack Download",
+                        "downloadId": "PACK123",
+                        "added": "2026-03-27T00:00:00Z",
+                        "trackedDownloadStatus": "warning",
+                        "trackedDownloadState": "importBlocked",
+                        "statusMessages": [{"messages": ["Episode 2 was unexpected"]}],
+                        "episodeHasFile": False,
+                    },
+                ]
+            },
+            arr_collector,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["reason"], "queue-import-warning")
+        self.assertEqual(candidates[0]["recommendedAction"]["episodeIds"], [101, 102])
+
+    def test_queue_download_missing_candidate_detected_when_hash_absent(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        candidates = orch.build_retroactive_arr_repair_candidates(
+            [],
+            {},
+            {
+                "radarr": [
+                    {
+                        "movieId": 900,
+                        "title": "Missing Download",
+                        "downloadId": "MISSINGHASH",
+                        "added": "2026-03-27T00:00:00Z",
+                        "status": "paused",
+                        "trackedDownloadStatus": "ok",
+                        "trackedDownloadState": "downloading",
+                        "statusMessages": [],
+                        "movieHasFile": False,
+                    }
+                ]
+            },
+            arr_collector,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["reason"], "queue-download-missing")
+        self.assertEqual(candidates[0]["recommendedAction"]["command"], "MoviesSearch")
 
     def test_retroactive_history_repair_candidate_detected(self) -> None:
         arr_collector = orch.ArrHistoryCollector()
@@ -898,6 +1199,63 @@ class OrchestratorScenarioTests(unittest.TestCase):
         )
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["reason"], "history-grabbed-no-import")
+        self.assertEqual(candidates[0]["recommendedAction"]["command"], "MoviesSearch")
+
+    def test_retroactive_history_repair_groups_shared_download_into_single_search(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        grabbed_a = {
+            "eventType": "grabbed",
+            "date": "2026-03-27T00:00:00Z",
+            "episodeId": 701,
+            "downloadId": "PACKXYZ",
+            "sourceTitle": "Shared Season Pack",
+        }
+        grabbed_b = {
+            "eventType": "grabbed",
+            "date": "2026-03-27T00:00:01Z",
+            "episodeId": 702,
+            "downloadId": "PACKXYZ",
+            "sourceTitle": "Shared Season Pack",
+        }
+        candidates = orch.build_backlog_candidates(
+            [],
+            {
+                "pack-a": {"apps": {"sonarr": {"latestGrabbed": grabbed_a, "latestImported": None, "records": [grabbed_a]}}},
+                "pack-b": {"apps": {"sonarr": {"latestGrabbed": grabbed_b, "latestImported": None, "records": [grabbed_b]}}},
+            },
+            {"sonarr": []},
+            {},
+            arr_collector,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["entityIds"], [701, 702])
+        self.assertEqual(candidates[0]["recommendedAction"]["episodeIds"], [701, 702])
+
+    def test_failed_history_repair_candidate_detected(self) -> None:
+        arr_collector = orch.ArrHistoryCollector()
+        failed = {
+            "eventType": "downloadFailed",
+            "date": "2026-03-27T02:00:00Z",
+            "movieId": 555,
+            "downloadId": "FAILEDHASH",
+            "sourceTitle": "Failed Movie Grab",
+        }
+        grabbed = {
+            "eventType": "grabbed",
+            "date": "2026-03-27T00:00:00Z",
+            "movieId": 555,
+            "downloadId": "FAILEDHASH",
+            "sourceTitle": "Failed Movie Grab",
+        }
+        candidates = orch.build_backlog_candidates(
+            [],
+            {"failedhash": {"apps": {"radarr": {"latestGrabbed": grabbed, "latestFailed": failed, "latestImported": None, "records": [grabbed, failed]}}}},
+            {"radarr": []},
+            {},
+            arr_collector,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["reason"], "history-failed-no-import")
         self.assertEqual(candidates[0]["recommendedAction"]["command"], "MoviesSearch")
 
     def test_radarr_wanted_stale_backlog_candidate_detected(self) -> None:
@@ -1038,8 +1396,8 @@ class OrchestratorScenarioTests(unittest.TestCase):
             }
             store = FakeStore()
             dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, FakeQBClient(), report)
-            self.assertEqual(len(dispatch["triggered"]), 1)
-            self.assertEqual(len(seen_actions), 1)
+            self.assertEqual(len(dispatch["triggered"]), 2)
+            self.assertEqual(len(seen_actions), 2)
             self.assertIn("arr_last_command_at", store.runtime)
 
             dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, FakeQBClient(), report)
@@ -1058,6 +1416,132 @@ class OrchestratorScenarioTests(unittest.TestCase):
             object.__setattr__(orch.CONFIG, "max_arr_commands_per_cycle", original_budget)
             object.__setattr__(orch.CONFIG, "min_arr_command_interval_seconds", original_cooldown)
             object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", original_global_cooldown)
+
+    def test_arr_recovery_rearms_backlog_action_after_retry_reset_window(self) -> None:
+        original_observe = orch.CONFIG.observe_only
+        original_allow_arr = orch.CONFIG.allow_arr_commands
+        original_allow_backlog = orch.CONFIG.allow_backlog_arr_repair
+        original_global = orch.CONFIG.arr_global_command_interval_seconds
+        original_backlog_interval = orch.CONFIG.backlog_arr_command_interval_seconds
+        original_backlog_reset = orch.CONFIG.backlog_arr_retry_reset_seconds
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", True)
+            object.__setattr__(orch.CONFIG, "allow_backlog_arr_repair", True)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", 0)
+            object.__setattr__(orch.CONFIG, "backlog_arr_command_interval_seconds", 60)
+            object.__setattr__(orch.CONFIG, "backlog_arr_retry_reset_seconds", 300)
+
+            arr_collector = orch.ArrHistoryCollector()
+            searches: list[dict[str, object]] = []
+            arr_collector.run_search_action = lambda app_name, action: searches.append({"app": app_name, "action": action}) or {"id": 12, "name": action["command"]}  # type: ignore[method-assign]
+
+            action = orch.build_arr_search_action_for_entity("radarr", 999, arr_collector)
+            report = {
+                "brokenSuspects": [],
+                "suspects": [],
+                "retroRepairCandidates": [],
+                "backlogCandidates": [
+                    {
+                        "app": "radarr",
+                        "title": "Old Missing Movie",
+                        "lane": "backlog-history",
+                        "reason": "history-grabbed-no-import",
+                        "priority": 25,
+                        "maxRetries": 1,
+                        "referenceTs": orch.now_ts() - 9000,
+                        "recommendedAction": action,
+                    }
+                ],
+            }
+            store = FakeStore()
+            action_key = action["actionKey"]
+            store.runtime["arr_command_history"] = {
+                action_key: {"lastTriggeredAt": orch.now_ts() - 600, "triggerCount": 1}
+            }
+
+            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, FakeQBClient(), report, int(60 * 1024**3))
+            self.assertEqual(len(dispatch["triggered"]), 1)
+            self.assertEqual(len(searches), 1)
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", original_allow_arr)
+            object.__setattr__(orch.CONFIG, "allow_backlog_arr_repair", original_allow_backlog)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", original_global)
+            object.__setattr__(orch.CONFIG, "backlog_arr_command_interval_seconds", original_backlog_interval)
+            object.__setattr__(orch.CONFIG, "backlog_arr_retry_reset_seconds", original_backlog_reset)
+
+    def test_arr_recovery_uses_repair_burst_budget_for_multiple_broken_items(self) -> None:
+        original_observe = orch.CONFIG.observe_only
+        original_allow_arr = orch.CONFIG.allow_arr_commands
+        original_allow_recovery = orch.CONFIG.allow_broken_download_recovery
+        original_budget = orch.CONFIG.max_arr_commands_per_cycle
+        original_burst = orch.CONFIG.arr_command_budget_repair_burst
+        original_global = orch.CONFIG.arr_global_command_interval_seconds
+        original_urgent_global = orch.CONFIG.urgent_arr_global_command_interval_seconds
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", True)
+            object.__setattr__(orch.CONFIG, "allow_broken_download_recovery", True)
+            object.__setattr__(orch.CONFIG, "max_arr_commands_per_cycle", 1)
+            object.__setattr__(orch.CONFIG, "arr_command_budget_repair_burst", 3)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", 0)
+            object.__setattr__(orch.CONFIG, "urgent_arr_global_command_interval_seconds", 0)
+
+            arr_collector = orch.ArrHistoryCollector()
+            searches: list[dict[str, object]] = []
+            arr_collector.run_search_action = lambda app_name, action: searches.append({"app": app_name, "action": action}) or {"id": 7, "name": action["command"]}  # type: ignore[method-assign]
+
+            report = {
+                "brokenSuspects": [
+                    {
+                        "hash": "broken-a",
+                        "name": "Broken A",
+                        "app": "radarr",
+                        "lane": "broken-recovery",
+                        "priority": 5,
+                        "referenceTs": orch.now_ts() - 9500,
+                        "recoveryMode": "replace",
+                        "recommendedActions": [orch.build_arr_search_action_for_entity("radarr", 401, arr_collector)],
+                    },
+                    {
+                        "hash": "broken-b",
+                        "name": "Broken B",
+                        "app": "sonarr",
+                        "lane": "broken-recovery",
+                        "priority": 5,
+                        "referenceTs": orch.now_ts() - 9400,
+                        "recoveryMode": "replace",
+                        "recommendedActions": [orch.build_arr_search_action_for_entity("sonarr", 402, arr_collector)],
+                    },
+                    {
+                        "hash": "broken-c",
+                        "name": "Broken C",
+                        "app": "lidarr",
+                        "lane": "broken-recovery",
+                        "priority": 5,
+                        "referenceTs": orch.now_ts() - 9300,
+                        "recoveryMode": "replace",
+                        "recommendedActions": [orch.build_arr_search_action_for_entity("lidarr", 403, arr_collector)],
+                    },
+                ],
+                "suspects": [],
+                "retroRepairCandidates": [],
+                "backlogCandidates": [],
+            }
+
+            dispatch = orch.maybe_apply_arr_recovery(FakeStore(), arr_collector, FakeQBClient(), report, int(80 * 1024**3))
+            self.assertEqual(len(dispatch["triggered"]), 3)
+            self.assertEqual(len(searches), 3)
+            self.assertEqual(dispatch["policy"]["actionBudget"], 3)
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", original_allow_arr)
+            object.__setattr__(orch.CONFIG, "allow_broken_download_recovery", original_allow_recovery)
+            object.__setattr__(orch.CONFIG, "max_arr_commands_per_cycle", original_budget)
+            object.__setattr__(orch.CONFIG, "arr_command_budget_repair_burst", original_burst)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", original_global)
+            object.__setattr__(orch.CONFIG, "urgent_arr_global_command_interval_seconds", original_urgent_global)
 
     def test_qbit_salvage_recovery_budget_and_cooldown(self) -> None:
         original_observe = orch.CONFIG.observe_only
@@ -1180,6 +1664,130 @@ class OrchestratorScenarioTests(unittest.TestCase):
             object.__setattr__(orch.CONFIG, "observe_only", original_observe)
             object.__setattr__(orch.CONFIG, "allow_arr_commands", original_allow_arr)
             object.__setattr__(orch.CONFIG, "allow_broken_download_recovery", original_allow_recovery)
+
+    def test_arr_recovery_clears_queue_warning_before_requeue(self) -> None:
+        original_observe = orch.CONFIG.observe_only
+        original_allow_arr = orch.CONFIG.allow_arr_commands
+        original_allow_retro = orch.CONFIG.allow_retroactive_arr_repair
+        original_global_cooldown = orch.CONFIG.arr_global_command_interval_seconds
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", True)
+            object.__setattr__(orch.CONFIG, "allow_retroactive_arr_repair", True)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", 0)
+            arr_collector = orch.ArrHistoryCollector()
+            queue_clears: list[dict] = []
+            searches: list[dict] = []
+
+            def fake_clear_queue_items(app_name: str, queue_ids: list[int], *, remove_from_client: bool = False, blocklist: bool = True) -> list[dict[str, object]]:
+                queue_clears.append(
+                    {
+                        "app": app_name,
+                        "queueIds": list(queue_ids),
+                        "removeFromClient": remove_from_client,
+                        "blocklist": blocklist,
+                    }
+                )
+                return [{"queueId": queue_ids[0], "status": 200}] if queue_ids else []
+
+            def fake_run_search_action(app_name: str, action: dict[str, object]) -> dict[str, object]:
+                searches.append({"app": app_name, "action": action})
+                return {"id": 9, "name": action["command"]}
+
+            arr_collector.clear_queue_items = fake_clear_queue_items  # type: ignore[method-assign]
+            arr_collector.run_search_action = fake_run_search_action  # type: ignore[method-assign]
+            report = {
+                "brokenSuspects": [],
+                "suspects": [],
+                "retroRepairCandidates": [
+                    {
+                        "app": "sonarr",
+                        "title": "Import Blocked Pack",
+                        "lane": "retro-queue-warning",
+                        "reason": "queue-import-warning",
+                        "priority": 8,
+                        "maxRetries": 1,
+                        "referenceTs": orch.now_ts() - 9000,
+                        "queueCleanupAction": {
+                            "type": "arr-queue-delete",
+                            "queueIds": [1234],
+                            "removeFromClient": False,
+                            "blocklist": True,
+                        },
+                        "recommendedAction": orch.build_arr_search_action_for_entities("sonarr", [1001, 1002], arr_collector),
+                    }
+                ],
+                "backlogCandidates": [],
+            }
+            dispatch = orch.maybe_apply_arr_recovery(FakeStore(), arr_collector, FakeQBClient(), report)
+            self.assertEqual(len(dispatch["triggered"]), 1)
+            self.assertEqual(queue_clears[0]["queueIds"], [1234])
+            self.assertEqual(searches[0]["action"]["episodeIds"], [1001, 1002])
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", original_allow_arr)
+            object.__setattr__(orch.CONFIG, "allow_retroactive_arr_repair", original_allow_retro)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", original_global_cooldown)
+
+    def test_arr_pagination_completion_uses_total_records_when_total_pages_missing(self) -> None:
+        payload = {"page": 1, "pageSize": 200, "totalRecords": 796, "records": [{"id": 1}] * 200}
+        self.assertFalse(orch.ArrHistoryCollector._page_complete(payload, 1, payload["records"], 200))
+        self.assertFalse(orch.ArrHistoryCollector._page_complete(payload, 3, payload["records"], 200))
+        final_payload = {"page": 4, "pageSize": 200, "totalRecords": 796, "records": [{"id": 1}] * 196}
+        self.assertTrue(orch.ArrHistoryCollector._page_complete(final_payload, 4, final_payload["records"], 200))
+
+    def test_arr_recovery_can_clear_queue_during_global_search_cooldown(self) -> None:
+        original_observe = orch.CONFIG.observe_only
+        original_allow_arr = orch.CONFIG.allow_arr_commands
+        original_allow_retro = orch.CONFIG.allow_retroactive_arr_repair
+        original_global_cooldown = orch.CONFIG.arr_global_command_interval_seconds
+        try:
+            object.__setattr__(orch.CONFIG, "observe_only", False)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", True)
+            object.__setattr__(orch.CONFIG, "allow_retroactive_arr_repair", True)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", 3600)
+            arr_collector = orch.ArrHistoryCollector()
+            queue_clears: list[dict] = []
+            searches: list[dict] = []
+
+            arr_collector.clear_queue_items = lambda app_name, queue_ids, **kwargs: queue_clears.append({"app": app_name, "queueIds": list(queue_ids)}) or [{"queueId": queue_ids[0], "status": 200}]  # type: ignore[method-assign]
+            arr_collector.run_search_action = lambda app_name, action: searches.append({"app": app_name, "action": action}) or {"id": 9, "name": action["command"]}  # type: ignore[method-assign]
+
+            report = {
+                "brokenSuspects": [],
+                "suspects": [],
+                "retroRepairCandidates": [
+                    {
+                        "app": "sonarr",
+                        "title": "Import Blocked Pack",
+                        "lane": "retro-queue-warning",
+                        "reason": "queue-import-warning",
+                        "priority": 8,
+                        "maxRetries": 1,
+                        "referenceTs": orch.now_ts() - 9000,
+                        "queueCleanupAction": {
+                            "type": "arr-queue-delete",
+                            "queueIds": [4321],
+                            "removeFromClient": False,
+                            "blocklist": True,
+                        },
+                        "recommendedAction": orch.build_arr_search_action_for_entities("sonarr", [1001, 1002], arr_collector),
+                    }
+                ],
+                "backlogCandidates": [],
+            }
+            store = FakeStore()
+            store.runtime["arr_last_command_at"] = orch.now_ts()
+            dispatch = orch.maybe_apply_arr_recovery(store, arr_collector, FakeQBClient(), report)
+            self.assertEqual(len(queue_clears), 1)
+            self.assertEqual(len(searches), 0)
+            self.assertTrue(any(item["reason"] == "global-cooldown" for item in dispatch["skipped"]))
+            self.assertTrue(any("queue-cleanup" in item["reason"] for item in dispatch["triggered"]))
+        finally:
+            object.__setattr__(orch.CONFIG, "observe_only", original_observe)
+            object.__setattr__(orch.CONFIG, "allow_arr_commands", original_allow_arr)
+            object.__setattr__(orch.CONFIG, "allow_retroactive_arr_repair", original_allow_retro)
+            object.__setattr__(orch.CONFIG, "arr_global_command_interval_seconds", original_global_cooldown)
 
 
 if __name__ == "__main__":

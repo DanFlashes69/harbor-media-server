@@ -648,7 +648,8 @@ function Get-UsenetAutomationFlags {
     return [pscustomobject]@{
         HasSabServer = $hasSabServer
         HasNewznab = $hasNewznab
-        IsUsenetReady = ($hasSabServer -and $hasNewznab)
+        EnableSabClients = $hasSabServer
+        SeedPublicFallbackIndexer = ($hasSabServer -and -not $hasNewznab)
     }
 }
 
@@ -764,7 +765,7 @@ function Configure-Sabnzbd {
         $apiKey = Get-SabApiKey -DockerRoot $EnvValues.DOCKER_ROOT
         Ensure-SabServer -ApiKey $apiKey -EnvValues $EnvValues
     } else {
-        Write-Info 'No SAB server credentials were provided in .env, so SABnzbd remains staged but provider-idle.'
+        Write-Info 'No SAB server credentials were provided in .env, so SABnzbd remains configured but provider-idle.'
     }
 }
 
@@ -800,7 +801,7 @@ function Configure-Servarr {
         firstAndLast          = $false
         contentLayout         = 0
     }
-    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:7878' -ApiPath '/api/v3/downloadclient' -ApiKey $radarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -FieldValues @{
+    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:7878' -ApiPath '/api/v3/downloadclient' -ApiKey $radarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.EnableSabClients -FieldValues @{
         host                = 'gluetun'
         port                = 8080
         useSsl              = $false
@@ -829,7 +830,7 @@ function Configure-Servarr {
         firstAndLast       = $false
         contentLayout      = 0
     }
-    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8989' -ApiPath '/api/v3/downloadclient' -ApiKey $sonarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -FieldValues @{
+    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8989' -ApiPath '/api/v3/downloadclient' -ApiKey $sonarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.EnableSabClients -FieldValues @{
         host             = 'gluetun'
         port             = 8080
         useSsl           = $false
@@ -858,7 +859,7 @@ function Configure-Servarr {
         firstAndLast          = $false
         contentLayout         = 0
     }
-    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8686' -ApiPath '/api/v1/downloadclient' -ApiKey $lidarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -FieldValues @{
+    Ensure-ServarrDownloadClient -Name 'SABnzbd' -BaseUrl 'http://127.0.0.1:8686' -ApiPath '/api/v1/downloadclient' -ApiKey $lidarrKey -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.EnableSabClients -FieldValues @{
         host                = 'gluetun'
         port                = 8080
         useSsl              = $false
@@ -912,7 +913,7 @@ function Configure-Servarr {
         firstAndLast = $false
         contentLayout = 0
     }
-    Ensure-ProwlarrDownloadClient -Name 'SABnzbd' -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.IsUsenetReady -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -FieldValues @{
+    Ensure-ProwlarrDownloadClient -Name 'SABnzbd' -Implementation 'Sabnzbd' -Priority 2 -Enabled $usenetFlags.EnableSabClients -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -FieldValues @{
         host = 'gluetun'
         port = 8080
         useSsl = $false
@@ -936,8 +937,15 @@ function Configure-Servarr {
             apiKey = $EnvValues.PROWLARR_NEWZNAB_API_KEY
             apiPath = '/api'
         }
+    } elseif ($usenetFlags.SeedPublicFallbackIndexer) {
+        Ensure-ProwlarrNamedIndexer -Name 'AnimeTosho (Usenet)' -DefinitionName 'Newznab' -Priority 25 -Enabled $true -AppProfileId 1 -Tags @() -BaseUrl 'http://127.0.0.1:9696' -ApiKey $prowlarrKey -FieldOverrides @{
+            baseUrl = 'https://feed.animetosho.org'
+            apiKey = ''
+            apiPath = '/api'
+        }
+        Write-Good 'Seeded public fallback Usenet indexer: AnimeTosho (Usenet)'
     } else {
-        Write-Info 'No Newznab indexer credentials were provided in .env, so Prowlarr remains torrent-only for now.'
+        Write-Info 'No Newznab indexer credentials were provided in .env. If SAB server credentials exist, Harbor can still seed the AnimeTosho Usenet fallback; otherwise Prowlarr stays torrent-only.'
     }
 
     if (-not $SkipProwlarrIndexers) {
@@ -1110,7 +1118,7 @@ function Show-ManualRemainders {
     Write-Host '  - Complete Plex web onboarding / claim and create libraries if this is the first launch'
     Write-Host '  - Complete Overseerr first admin login and connect Plex if this is the first launch'
     Write-Host '  - Add private trackers or authenticated indexers in Prowlarr'
-    Write-Host '  - Add a real Usenet provider and NZB indexers if you want SABnzbd to download jobs'
+    Write-Host '  - Add a real Usenet provider if you want SABnzbd to download jobs; premium NZB indexers are optional but strongly recommended for broader coverage'
     Write-Host '  - Add API-token-only Homepage widgets such as Plex, Immich, Portainer, and Overseerr if you want them'
     Write-Host '  - Configure Cloudflare Tunnel and domain routing if you want public Plex remote access'
     Write-Host ''
