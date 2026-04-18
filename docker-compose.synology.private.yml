@@ -1,0 +1,841 @@
+services:
+
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "8081:8081"
+      - "8082:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+      - "8001:8000"
+    environment:
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=openvpn
+      - OPENVPN_USER=${VPN_USERNAME}
+      - OPENVPN_PASSWORD=${VPN_PASSWORD}
+      - DOT=off
+      - HEALTH_TARGET_ADDRESS=1.1.1.1:53
+      - FIREWALL_OUTBOUND_SUBNETS=172.16.0.0/12,192.168.0.0/16
+      - FIREWALL_INPUT_PORTS=8081,8080
+      - SERVER_COUNTRIES=United States
+      - VPN_PORT_FORWARDING=on
+      - HTTP_CONTROL_SERVER_ADDRESS=:8000
+    volumes:
+      - ${DOCKER_ROOT}/gluetun:/gluetun
+      - ${DOCKER_ROOT}/gluetun-port:/tmp/gluetun
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ip -4 addr show dev tun0 2>/dev/null | grep -q 'inet '"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+      - WEBUI_PORT=8081
+    volumes:
+      - ${DOCKER_ROOT}/qbittorrent/config:/config
+      - ${DATA_ROOT}/downloads:/downloads
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081 >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  port-updater:
+    build:
+      context: ./port-updater
+    container_name: port-updater
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - QBIT_HOST=127.0.0.1
+      - QBIT_PORT=8081
+      - QBIT_USER=${QBIT_USER}
+      - QBIT_PASS=${QBIT_PASS}
+      - CHECK_INTERVAL=60
+    volumes:
+      - ${DOCKER_ROOT}/gluetun-port:/tmp/gluetun:ro
+      - ${DOCKER_ROOT}/qbittorrent/config:/qbit-config
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081 >/dev/null"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  sabnzbd:
+    image: lscr.io/linuxserver/sabnzbd:latest
+    container_name: sabnzbd
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/sabnzbd/config:/config
+      - ${DATA_ROOT}/downloads:/downloads
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080 >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  gluetun-namespace-guard:
+    build:
+      context: ./gluetun-namespace-guard
+    container_name: gluetun-namespace-guard
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - WATCH_CONTAINER=gluetun
+      - DEPENDENT_CONTAINERS=qbittorrent,port-updater,sabnzbd
+      - POLL_INTERVAL_SECONDS=20
+      - HEALTH_WAIT_SECONDS=120
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/heartbeat && find /tmp/heartbeat -mmin -3 | grep -q heartbeat"]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    ports:
+      - "7878:7878"
+    volumes:
+      - ${DOCKER_ROOT}/radarr/config:/config
+      - ${DATA_ROOT}/downloads:/downloads
+      - ${DATA_ROOT}/media/movies:/movies
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:7878/ping >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 20s
+      retries: 3
+      start_period: 300s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    ports:
+      - "8989:8989"
+    volumes:
+      - ${DOCKER_ROOT}/sonarr/config:/config
+      - ${DATA_ROOT}/downloads:/downloads
+      - ${DATA_ROOT}/media/tv:/tv
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8989/ping >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  sonarr-request-repair:
+    build:
+      context: ./sonarr-request-repair
+    container_name: sonarr-request-repair
+    depends_on:
+      sonarr:
+        condition: service_healthy
+    environment:
+      - SONARR_URL=http://sonarr:8989
+      - SONARR_API_KEY=${SONARR_API_KEY}
+      - POLL_INTERVAL_SECONDS=180
+      - REFRESH_TTL_SECONDS=1800
+      - SEARCH_TTL_SECONDS=21600
+      - STATE_PATH=/state/state.json
+      - HEARTBEAT_PATH=/tmp/heartbeat
+    volumes:
+      - ${DOCKER_ROOT}/sonarr-request-repair:/state
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/heartbeat && find /tmp/heartbeat -mmin -5 | grep -q heartbeat"]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  lidarr:
+    image: lscr.io/linuxserver/lidarr:latest
+    container_name: lidarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    ports:
+      - "8686:8686"
+    volumes:
+      - ${DOCKER_ROOT}/lidarr/config:/config
+      - ${DATA_ROOT}/downloads:/downloads
+      - ${DATA_ROOT}/media/music:/music
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8686/ping >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    ports:
+      - "6767:6767"
+    volumes:
+      - ${DOCKER_ROOT}/bazarr/config:/config
+      - ${DATA_ROOT}/media/movies:/movies
+      - ${DATA_ROOT}/media/tv:/tv
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s = socket.create_connection(('127.0.0.1', 6767), 20); s.close()\""]
+      interval: 120s
+      timeout: 30s
+      retries: 3
+      start_period: 600s
+    restart: unless-stopped
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    ports:
+      - "9696:9696"
+    volumes:
+      - ${DOCKER_ROOT}/prowlarr/config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9696/ping >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    init: true
+    environment:
+      - TZ=${TIMEZONE}
+      - LOG_LEVEL=info
+      - BROWSER_TIMEOUT=60000
+    security_opt:
+      - seccomp=unconfined
+    tmpfs:
+      - /tmp:size=512m,exec,mode=1777
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8191/ >/dev/null || exit 1"]
+      interval: 120s
+      timeout: 20s
+      retries: 3
+      start_period: 180s
+    restart: unless-stopped
+
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+      - VERSION=docker
+      - ADVERTISE_IP=${PLEX_ADVERTISE_IP:-}
+    ports:
+      - "32401:32400"
+    volumes:
+      - ${DOCKER_ROOT}/plex/config:/config
+      - ${DATA_ROOT}/media:/media
+      - ${DATA_ROOT}/photos:/media/photos
+      - ${DOCKER_ROOT}/plex/transcode:/transcode
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:32400/identity >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 20s
+      retries: 3
+      start_period: 420s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  overseerr:
+    image: lscr.io/linuxserver/overseerr:latest
+    container_name: overseerr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+    ports:
+      - "5055:5055"
+    volumes:
+      - ${DOCKER_ROOT}/overseerr/config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider -T 30 http://127.0.0.1:5055/login || exit 1"]
+      interval: 120s
+      timeout: 20s
+      retries: 3
+      start_period: 600s
+    restart: unless-stopped
+
+  immich-redis:
+    image: docker.io/redis:6.2-alpine
+    container_name: immich-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  immich-postgres:
+    image: docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0
+    container_name: immich-postgres
+    environment:
+      - POSTGRES_PASSWORD=${IMMICH_DB_PASSWORD}
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=immich
+      - POSTGRES_INITDB_ARGS=--data-checksums
+    volumes:
+      - ${DOCKER_ROOT}/immich/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d immich -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  immich-machine-learning:
+    image: ghcr.io/immich-app/immich-machine-learning:release
+    container_name: immich-machine-learning
+    environment:
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/immich/model-cache:/cache
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:release
+    container_name: immich-server
+    environment:
+      - TZ=${TIMEZONE}
+      - DB_HOSTNAME=immich-postgres
+      - DB_USERNAME=postgres
+      - DB_PASSWORD=${IMMICH_DB_PASSWORD}
+      - DB_DATABASE_NAME=immich
+      - REDIS_HOSTNAME=immich-redis
+    ports:
+      - "2283:2283"
+    volumes:
+      - ${DATA_ROOT}/photos:/usr/src/app/upload
+    depends_on:
+      immich-redis:
+        condition: service_healthy
+      immich-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:2283/api/server/ping >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 20s
+      retries: 3
+      start_period: 300s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  clamav:
+    image: clamav/clamav:latest
+    container_name: clamav
+    volumes:
+      - ${DOCKER_ROOT}/clamav:/var/lib/clamav
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping", "3"]
+      interval: 120s
+      timeout: 20s
+      retries: 3
+      start_period: 1800s
+
+  scanner:
+    build:
+      context: ./scanner
+      dockerfile: Dockerfile
+    container_name: scanner
+    depends_on:
+      clamav:
+        condition: service_started
+    environment:
+      - SCAN_DIR=/downloads
+      - QUARANTINE_DIR=/quarantine
+      - LOG_DIR=/logs
+      - CLAMAV_HOST=clamav
+      - CLAMAV_PORT=3310
+      - LOCAL_CLAMAV_DB_DIR=/var/lib/clamav
+      - FULL_SCAN_INTERVAL=21600
+      - MIN_FILE_AGE_SECONDS=900
+      - ENABLE_MEDIA_HEADER_VALIDATION=false
+    volumes:
+      - ${DATA_ROOT}/downloads:/downloads
+      - ${DATA_ROOT}/quarantine:/quarantine
+      - ${DOCKER_ROOT}/scanner/logs:/logs
+      - ${DOCKER_ROOT}/clamav:/var/lib/clamav:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /logs/scanner-heartbeat && find /logs/scanner-heartbeat -mmin -10 | grep -q scanner-heartbeat"]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  unpackerr:
+    image: golift/unpackerr:latest
+    container_name: unpackerr
+    environment:
+      - TZ=${TIMEZONE}
+      - UN_SONARR_0_URL=http://sonarr:8989
+      - UN_SONARR_0_API_KEY=${SONARR_API_KEY}
+      - UN_SONARR_0_PATHS_0=/downloads
+      - UN_RADARR_0_URL=http://radarr:7878
+      - UN_RADARR_0_API_KEY=${RADARR_API_KEY}
+      - UN_RADARR_0_PATHS_0=/downloads
+      - UN_LIDARR_0_URL=http://lidarr:8686
+      - UN_LIDARR_0_API_KEY=${LIDARR_API_KEY}
+      - UN_LIDARR_0_PATHS_0=/downloads
+    volumes:
+      - ${DATA_ROOT}/downloads:/downloads
+    restart: unless-stopped
+
+  download-orchestrator:
+    build:
+      context: ./download-orchestrator
+    container_name: download-orchestrator
+    depends_on:
+      qbittorrent:
+        condition: service_healthy
+    environment:
+      - QBIT_HOST=synology.example.lan
+      - QBIT_PORT=8081
+      - QBIT_USER=${QBIT_USER}
+      - QBIT_PASS=${QBIT_PASS}
+      - DOWNLOADS_PATH=/downloads
+      - STATE_DIR=/state
+      - CHECK_INTERVAL=60
+      - OBSERVE_ONLY=false
+      - ALLOW_TORRENT_CONTROL=true
+      - ALLOW_QBIT_PREF_WRITES=true
+      - ALLOW_ADVANCED_QBIT_PREF_WRITES=true
+      - ALLOW_QBIT_RECOVERY_ACTIONS=true
+      - ALLOW_ARR_COMMANDS=true
+      - ALLOW_BROKEN_DOWNLOAD_RECOVERY=true
+      - ALLOW_RETROACTIVE_ARR_REPAIR=true
+      - ALLOW_BACKLOG_ARR_REPAIR=true
+      - ENABLE_SPEED_TUNING=true
+      - EXPECTED_INTERFACE=tun0
+      - GLUETUN_PORT_FILE=/gluetun-port/forwarded_port
+      - RESERVED_FREE_GB=1
+      - EMERGENCY_FREE_GB=25
+      - LOW_SPACE_THRESHOLD_GB=100
+      - HIGH_SPACE_THRESHOLD_GB=1000
+      - HEALTHY_AVAILABILITY_FLOOR=0.25
+      - PARTIAL_RESUME_PROGRESS_FLOOR=0.05
+      - PARTIAL_RESUME_AVAILABILITY_FLOOR=0.02
+      - EXPANSIVE_PROBE_SLOTS=6
+      - COMPLETION_PRIORITY_PROGRESS=0.8
+      - COMPLETION_PRIORITY_REMAINING_GB=8
+      - MAX_ACTIVE_DOWNLOADS_LOW=2
+      - MAX_ACTIVE_DOWNLOADS_MEDIUM=6
+      - MAX_ACTIVE_DOWNLOADS_HIGH=12
+      - MIN_TORRENT_ACTION_INTERVAL_SECONDS=60
+      - MIN_ROTATION_ACTION_INTERVAL_SECONDS=30
+      - CONTROL_STABILITY_CYCLES=2
+      - PREF_STABILITY_CYCLES=2
+      - MIN_PREF_WRITE_INTERVAL_SECONDS=900
+      - MAX_TORRENT_ACTIONS_PER_CYCLE=12
+      - QBIT_WRITE_ALLOWLIST=max_active_downloads,max_active_torrents,max_active_uploads,max_connec,max_connec_per_torrent,max_uploads_per_torrent,connection_speed,max_concurrent_http_announces,async_io_threads,disk_cache,disk_cache_ttl,disk_queue_size,request_queue_size,enable_piece_extent_affinity,enable_coalesce_read_write,send_buffer_low_watermark,send_buffer_watermark,send_buffer_watermark_factor,socket_backlog_size,socket_receive_buffer_size,socket_send_buffer_size,peer_turnover,peer_turnover_cutoff,peer_turnover_interval,file_pool_size,checking_memory_use
+      - SPEED_CONN_FLOOR=400
+      - SPEED_CONN_CEILING=1100
+      - SPEED_CONN_PER_TORRENT_FOCUSED=220
+      - SPEED_CONN_PER_TORRENT_CONSTRAINED=180
+      - SPEED_CONN_PER_TORRENT_BALANCED=140
+      - SPEED_CONN_PER_TORRENT_EXPANSIVE=100
+      - SPEED_HTTP_ANNOUNCES_FOCUSED=90
+      - SPEED_HTTP_ANNOUNCES_CONSTRAINED=70
+      - SPEED_HTTP_ANNOUNCES_BALANCED=50
+      - SPEED_HTTP_ANNOUNCES_EXPANSIVE=45
+      - SPEED_ACTIVE_TORRENT_HEADROOM_FOCUSED=2
+      - SPEED_ACTIVE_TORRENT_HEADROOM_CONSTRAINED=3
+      - SPEED_ACTIVE_TORRENT_HEADROOM_BALANCED=4
+      - SPEED_ACTIVE_TORRENT_HEADROOM_EXPANSIVE=7
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_FOCUSED=20
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_CONSTRAINED=16
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_BALANCED=12
+      - SPEED_UPLOAD_SLOTS_PER_TORRENT_EXPANSIVE=10
+      - SPEED_CONNECTION_RATE_FOCUSED=40
+      - SPEED_CONNECTION_RATE_CONSTRAINED=50
+      - SPEED_CONNECTION_RATE_BALANCED=60
+      - SPEED_CONNECTION_RATE_EXPANSIVE=80
+      - ENABLE_ADVANCED_SPEED_ADVISORIES=true
+      - MANAGE_FORCE_STARTED=false
+      - STALL_FAILOVER_SECONDS=900
+      - ARR_HISTORY_LOOKBACK_HOURS=168
+      - RETRO_REPAIR_LOOKBACK_HOURS=87600
+      - RETRO_REPAIR_STALE_HOURS=24
+      - QUEUE_INTEGRITY_STALE_HOURS=6
+      - QUEUE_MISSING_DOWNLOAD_STALE_HOURS=2
+      - ARR_LOG_SIGNAL_LOOKBACK_HOURS=168
+      - ARR_LOG_SIGNAL_SAMPLE_LIMIT=12
+      - IMPORT_GRACE_HOURS=6
+      - BROKEN_DOWNLOAD_GRACE_HOURS=2
+      - MAX_ARR_COMMANDS_PER_CYCLE=4
+      - MIN_ARR_COMMAND_INTERVAL_SECONDS=21600
+      - ARR_GLOBAL_COMMAND_INTERVAL_SECONDS=300
+      - BROKEN_ARR_COMMAND_INTERVAL_SECONDS=900
+      - COMPLETED_ARR_COMMAND_INTERVAL_SECONDS=3600
+      - RETRO_ARR_COMMAND_INTERVAL_SECONDS=1800
+      - BACKLOG_ARR_COMMAND_INTERVAL_SECONDS=900
+      - URGENT_ARR_GLOBAL_COMMAND_INTERVAL_SECONDS=60
+      - RETRO_ARR_GLOBAL_COMMAND_INTERVAL_SECONDS=120
+      - BACKLOG_ARR_GLOBAL_COMMAND_INTERVAL_SECONDS=60
+      - BROKEN_ARR_RETRY_RESET_SECONDS=43200
+      - COMPLETED_ARR_RETRY_RESET_SECONDS=43200
+      - RETRO_ARR_RETRY_RESET_SECONDS=86400
+      - BACKLOG_ARR_RETRY_RESET_SECONDS=43200
+      - ARR_QUEUE_CLEANUP_RETRY_RESET_SECONDS=86400
+      - ARR_COMMAND_BUDGET_EMERGENCY=1
+      - ARR_COMMAND_BUDGET_REPAIR_BURST=6
+      - MAX_ARR_SEARCH_RETRIES_BROKEN=2
+      - MAX_ARR_SEARCH_RETRIES_ORPHAN=1
+      - MAX_ARR_SEARCH_RETRIES_QUEUE_WARNING=3
+      - MAX_ARR_SEARCH_RETRIES_HISTORY=2
+      - MAX_ARR_SEARCH_RETRIES_WANTED=4
+      - MAX_QBIT_RECOVERY_ACTIONS_PER_CYCLE=1
+      - MIN_QBIT_RECOVERY_INTERVAL_SECONDS=7200
+      - MAX_QBIT_RECOVERY_ATTEMPTS_PER_HASH=2
+    volumes:
+      - ${DATA_ROOT}/downloads:/downloads
+      - ${DOCKER_ROOT}/download-orchestrator:/state
+      - ${DOCKER_ROOT}/gluetun-port:/gluetun-port:ro
+      - ${DOCKER_ROOT}/radarr/config:/arr/radarr:ro
+      - ${DOCKER_ROOT}/sonarr/config:/arr/sonarr:ro
+      - ${DOCKER_ROOT}/lidarr/config:/arr/lidarr:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /state/heartbeat && find /state/heartbeat -mmin -10 | grep -q heartbeat"]
+      interval: 180s
+      timeout: 20s
+      retries: 3
+      start_period: 300s
+    restart: unless-stopped
+
+  indexer-guardian:
+    build:
+      context: ./indexer-guardian
+    container_name: indexer-guardian
+    depends_on:
+      prowlarr:
+        condition: service_healthy
+      radarr:
+        condition: service_healthy
+      sonarr:
+        condition: service_healthy
+      lidarr:
+        condition: service_healthy
+    environment:
+      - PROWLARR_URL=http://prowlarr:9696
+      - PROWLARR_API_KEY=${PROWLARR_API_KEY}
+      - RADARR_URL=http://radarr:7878
+      - RADARR_API_KEY=${RADARR_API_KEY}
+      - SONARR_URL=http://sonarr:8989
+      - SONARR_API_KEY=${SONARR_API_KEY}
+      - LIDARR_URL=http://lidarr:8686
+      - LIDARR_API_KEY=${LIDARR_API_KEY}
+      - CHECK_INTERVAL=600
+      - STATE_DIR=/state
+    volumes:
+      - ${DOCKER_ROOT}/indexer-guardian:/state
+      - ${DOCKER_ROOT}/radarr/config:/arr/radarr:ro
+      - ${DOCKER_ROOT}/sonarr/config:/arr/sonarr:ro
+      - ${DOCKER_ROOT}/lidarr/config:/arr/lidarr:ro
+      - ${DOCKER_ROOT}/prowlarr/config:/arr/prowlarr:ro
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /state/heartbeat && find /state/heartbeat -mmin -20 | grep -q heartbeat"]
+      interval: 180s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    container_name: homepage
+    environment:
+      - TZ=${TIMEZONE}
+      - HOMEPAGE_ALLOWED_HOSTS=synology.example.lan,synology.example.lan:3000,localhost,localhost:3000,127.0.0.1,127.0.0.1:3000,diskstation,diskstation:3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${DOCKER_ROOT}/homepage/config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    restart: unless-stopped
+
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    environment:
+      - USER_UID=${PUID}
+      - USER_GID=${PGID}
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__server__DOMAIN=${SERVER_HOST}
+      - GITEA__server__ROOT_URL=http://${SERVER_HOST}:3001/
+      - GITEA__server__SSH_DOMAIN=${SERVER_HOST}
+      - GITEA__server__SSH_PORT=2222
+      - GITEA__service__DISABLE_REGISTRATION=true
+      - GITEA__service__REQUIRE_SIGNIN_VIEW=true
+      - GITEA__service__DEFAULT_ALLOW_CREATE_ORGANIZATION=false
+      - GITEA__service__DEFAULT_ENABLE_TIMETRACKING=false
+      - GITEA__openid__ENABLE_OPENID_SIGNIN=false
+      - GITEA__openid__ENABLE_OPENID_SIGNUP=false
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__actions__ENABLED=true
+      - TZ=${TIMEZONE}
+    ports:
+      - "3001:3000"
+      - "2222:22"
+    volumes:
+      - ${DOCKER_ROOT}/gitea:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/healthz >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  update-status:
+    image: nginx:alpine
+    container_name: update-status
+    ports:
+      - "8099:80"
+    volumes:
+      - ${DOCKER_ROOT}/update-guardian/status:/usr/share/nginx/html:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/index.html >/dev/null || exit 1"]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: portainer
+    ports:
+      - "9000:9000"
+    volumes:
+      - ${DOCKER_ROOT}/portainer/data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  recyclarr:
+    image: ghcr.io/recyclarr/recyclarr:latest
+    container_name: recyclarr
+    environment:
+      - TZ=${TIMEZONE}
+    volumes:
+      - ${DOCKER_ROOT}/recyclarr/config:/config
+    restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    environment:
+      - DOCKER_API_VERSION=1.43
+      - TZ=${TIMEZONE}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      - WATCHTOWER_INCLUDE_STOPPED=true
+      - WATCHTOWER_MONITOR_ONLY=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=120
+      - CURL_TIMEOUT=10
+      - AUTOHEAL_START_PERIOD=5400
+      - AUTOHEAL_ONLY_MONITOR_RUNNING=true
+      - TZ=${TIMEZONE}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  pihole:
+    image: pihole/pihole:latest
+    container_name: pihole
+    environment:
+      - TZ=${TIMEZONE}
+      - FTLCONF_webserver_api_password=${PIHOLE_PASSWORD}
+      - FTLCONF_webserver_session_timeout=31536000
+      - FTLCONF_webserver_api_max_sessions=128
+      - FTLCONF_dns_listeningMode=ALL
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "8080:80"
+      - "9080:80"
+      - "8443:443"
+    volumes:
+      - ${DOCKER_ROOT}/pihole/etc-pihole:/etc/pihole
+      - ${DOCKER_ROOT}/pihole/etc-dnsmasq.d:/etc/dnsmasq.d
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/admin/login >/dev/null || exit 1"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  tdarr:
+    image: ghcr.io/haveagitgat/tdarr:latest
+    container_name: tdarr
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TIMEZONE}
+      - serverIP=0.0.0.0
+      - serverPort=8266
+      - serverURL=http://127.0.0.1:8266
+      - webUIPort=8265
+      - internalNode=true
+      - inContainer=true
+      - ffmpegVersion=7
+    ports:
+      - "8265:8265"
+      - "8266:8266"
+    volumes:
+      - ${DOCKER_ROOT}/tdarr/server:/app/server
+      - ${DOCKER_ROOT}/tdarr/configs:/app/configs
+      - ${DOCKER_ROOT}/tdarr/logs:/app/logs
+      - ${DATA_ROOT}/media/movies:/media/movies
+      - ${DATA_ROOT}/media/tv:/media/tv
+      - ${DATA_ROOT}/media/music:/media/music
+      - ${DOCKER_ROOT}/tdarr/transcode_cache:/temp
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8265 >/dev/null || exit 1"]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 420s
+    labels:
+      - autoheal=true
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      plex:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:20241", "ready"]
+      interval: 90s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - autoheal=true
+    restart: unless-stopped

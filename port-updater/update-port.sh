@@ -32,6 +32,23 @@ get_qbit_port() {
     curl -s -b "$COOKIE_FILE" "http://${QBIT_HOST}:${QBIT_PORT}/api/v2/app/preferences" 2>/dev/null | grep -o '"listen_port":[0-9]*' | cut -d: -f2
 }
 
+get_config_port() {
+    if [ ! -f "$QBIT_CONFIG_FILE" ]; then
+        return 0
+    fi
+
+    grep -E '^(Session\\Port|Connection\\PortRangeMin)=' "$QBIT_CONFIG_FILE" 2>/dev/null | tail -n1 | cut -d= -f2
+}
+
+set_qbit_api_port() {
+    local port="$1"
+    local payload
+    payload=$(printf '{"listen_port":%s}' "$port")
+    curl -s -b "$COOKIE_FILE" --data-urlencode "json=${payload}" \
+        "http://${QBIT_HOST}:${QBIT_PORT}/api/v2/app/setPreferences" >/dev/null
+    log "Requested live qBittorrent listen port update to ${port}"
+}
+
 set_qbit_config_port() {
     local port="$1"
 
@@ -55,19 +72,21 @@ set_qbit_config_port() {
     log "Wrote forwarded port ${port} to $QBIT_CONFIG_FILE"
 }
 
-stop_qbit_container() {
-    log "Stopping qBittorrent container ${QBIT_CONTAINER_NAME}..."
-    docker stop "$QBIT_CONTAINER_NAME" >/dev/null
-    log "qBittorrent container has stopped"
-}
-
-start_qbit_container() {
-    log "Starting qBittorrent container ${QBIT_CONTAINER_NAME}..."
-    docker start "$QBIT_CONTAINER_NAME" >/dev/null
+restart_qbit_container() {
+    log "Restarting qBittorrent container ${QBIT_CONTAINER_NAME}..."
+    docker restart "$QBIT_CONTAINER_NAME" >/dev/null
     log "Waiting for qBittorrent to restart..."
+
+    local attempts=0
     while ! curl -s "http://${QBIT_HOST}:${QBIT_PORT}/api/v2/app/version" >/dev/null 2>&1; do
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 40 ]; then
+            log "ERROR: qBittorrent did not come back after restart"
+            return 1
+        fi
         sleep 3
     done
+
     log "qBittorrent is back online"
     qbit_login
 }
@@ -97,25 +116,22 @@ while true; do
 
     if [ "$FORWARDED_PORT" != "$CURRENT" ]; then
         log "Sync needed: VPN=$FORWARDED_PORT, qBit=$CURRENT"
-        stop_qbit_container
-        set_qbit_config_port "$FORWARDED_PORT" || { sleep "$CHECK_INTERVAL"; continue; }
-        start_qbit_container
+        set_qbit_api_port "$FORWARDED_PORT" || { sleep "$CHECK_INTERVAL"; continue; }
+        sleep 2
         VERIFY=$(get_qbit_port)
         if [ "$VERIFY" = "$FORWARDED_PORT" ]; then
+            set_qbit_config_port "$FORWARDED_PORT" || true
             log "SUCCESS: port updated to $FORWARDED_PORT"
         else
-            log "WARNING: verify shows $VERIFY, retrying restart"
-            stop_qbit_container
             set_qbit_config_port "$FORWARDED_PORT" || { sleep "$CHECK_INTERVAL"; continue; }
-            start_qbit_container
-            VERIFY=$(get_qbit_port)
-            if [ "$VERIFY" = "$FORWARDED_PORT" ]; then
-                log "SUCCESS: port updated to $FORWARDED_PORT after retry"
-            else
-                log "ERROR: qBittorrent port still out of sync (VPN=$FORWARDED_PORT, qBit=$VERIFY)"
-            fi
+            log "WARNING: qBittorrent still reports listen port $VERIFY after live update; persisted config only to avoid disruptive restarts"
         fi
     else
+        CONFIG_PORT=$(get_config_port)
+        if [ -n "$CONFIG_PORT" ] && [ "$CONFIG_PORT" != "$FORWARDED_PORT" ]; then
+            set_qbit_config_port "$FORWARDED_PORT" || true
+            log "Persisted matching port ${FORWARDED_PORT} to config (was ${CONFIG_PORT})"
+        fi
         log "In sync: $FORWARDED_PORT"
     fi
 

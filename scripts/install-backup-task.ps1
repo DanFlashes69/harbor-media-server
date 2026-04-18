@@ -1,13 +1,13 @@
 $ErrorActionPreference = 'Stop'
 
 $TaskName = 'Harbor Media Stack Config Backup'
-$RunBackupCmd = Join-Path $PSScriptRoot 'run-backup.cmd'
+$BackupScript = Join-Path $PSScriptRoot 'backup-media-stack.ps1'
 
-if (-not (Test-Path -LiteralPath $RunBackupCmd)) {
-    throw "Backup runner not found: $RunBackupCmd"
+if (-not (Test-Path -LiteralPath $BackupScript)) {
+    throw "Backup script not found: $BackupScript"
 }
 
-$Action = New-ScheduledTaskAction -Execute $RunBackupCmd
+$Action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$BackupScript`""
 $Triggers = @(
     (New-ScheduledTaskTrigger -Daily -At 5:00PM),
     (New-ScheduledTaskTrigger -Daily -At 1:00AM),

@@ -370,7 +370,7 @@ function Get-EndpointMap {
         'pihole' = @{ Uri = 'http://127.0.0.1:8080/admin/login'; Accept = @(200, 302) }
         'tdarr' = @{ Uri = 'http://127.0.0.1:8265'; Accept = @(200) }
         'portainer' = @{ Uri = 'http://127.0.0.1:9000'; Accept = @(200) }
-        'immich-server' = @{ Uri = 'http://127.0.0.1:2283/api/server-info/ping'; Accept = @(200) }
+        'immich-server' = @{ Uri = 'http://127.0.0.1:2283/api/server/ping'; Accept = @(200) }
     }
 }
 

@@ -1,114 +1,257 @@
-﻿---
-- Media:
+---
+- Streaming & Requests:
     - Plex:
         icon: plex.svg
-        href: http://localhost:32400/web
-        description: Media streaming server
+        href: http://synology.example.lan:32400/web
+        description: Live playback, streams, and library access
+        siteMonitor: http://plex:32400/identity
+        statusStyle: dot
         widget:
           type: plex
           url: http://plex:32400
-          key: your-plex-token
+          key: change_me_plex_token
           fields: ["streams", "movies", "tv"]
+          hideErrors: true
+    - Overseerr:
+        icon: overseerr.svg
+        href: http://synology.example.lan:5055
+        description: Movies | Series | Requests
+        siteMonitor: http://overseerr:5055
+        statusStyle: dot
+        widget:
+          type: customapi
+          url: http://overseerr:5055/api/v1/settings/public
+          refreshInterval: 30000
+          mappings:
+            - field: initialized
+              label: State
+              remap:
+                - value: true
+                  to: Ready
+                - value: false
+                  to: Setup
+            - field: localLogin
+              label: Login
+              remap:
+                - value: true
+                  to: Local
+                - value: false
+                  to: External
+            - field: partialRequestsEnabled
+              label: Requests
+              remap:
+                - value: true
+                  to: Flexible
+                - value: false
+                  to: Standard
+    - Immich:
+        icon: immich.svg
+        href: http://synology.example.lan:2283
+        description: Users | Photos | Videos
+        siteMonitor: http://immich-server:2283/api/server/ping
+        statusStyle: dot
+        widget:
+          type: immich
+          url: http://immich-server:2283
+          key: change_me_immich_api_key
+          version: 2
+          fields: ["users", "photos", "videos"]
+
+- Library Automation:
     - Radarr:
         icon: radarr.svg
-        href: http://localhost:7878
-        description: Movie management
+        href: http://synology.example.lan:7878
+        description: Movie backlog, queue, and imports
+        siteMonitor: http://radarr:7878/ping
+        statusStyle: dot
         widget:
           type: radarr
           url: http://radarr:7878
-          key: your-radarr-api-key
+          key: change_me_radarr_api_key
+          hideErrors: true
     - Sonarr:
         icon: sonarr.svg
-        href: http://localhost:8989
-        description: TV show management
+        href: http://synology.example.lan:8989
+        description: TV backlog, queue, and imports
+        siteMonitor: http://sonarr:8989/ping
+        statusStyle: dot
         widget:
           type: sonarr
           url: http://sonarr:8989
-          key: your-sonarr-api-key
+          key: change_me_sonarr_api_key
+          hideErrors: true
     - Lidarr:
         icon: lidarr.svg
-        href: http://localhost:8686
-        description: Music management
+        href: http://synology.example.lan:8686
+        description: Music discovery and album monitoring
+        siteMonitor: http://lidarr:8686/ping
+        statusStyle: dot
         widget:
           type: lidarr
           url: http://lidarr:8686
-          key: your-lidarr-api-key
-- Downloads:
+          key: change_me_lidarr_api_key
+          hideErrors: true
+    - Bazarr:
+        icon: bazarr.svg
+        href: http://synology.example.lan:6767
+        description: Subtitle coverage for movies and shows
+        siteMonitor: http://bazarr:6767
+        statusStyle: dot
+        widget:
+          type: bazarr
+          url: http://bazarr:6767
+          key: change_me_bazarr_api_key
+          hideErrors: true
+
+- Operations & Health:
+    - Synology DSM:
+        icon: mdi-nas
+        href: http://synology.example.lan:5000/
+        description: Uptime | Volume | CPU | Memory
+        siteMonitor: http://synology.example.lan:5000/
+        statusStyle: dot
+        widget:
+          type: diskstation
+          url: http://synology.example.lan:5000
+          username: harboradmin
+          password: change_me
+          fields: ["uptime", "volumeAvailable", "resources.cpu", "resources.mem"]
+          hideErrors: true
+    - Pi-hole:
+        icon: pi-hole.svg
+        href: http://synology.example.lan:9080/admin/
+        description: Blocked | DNS | Gravity
+        statusStyle: dot
+        widget:
+          type: customapi
+          url: http://update-status/status.json
+          refreshInterval: 30000
+          hideErrors: true
+          mappings:
+            - field: stackHealthy
+              label: DNS
+              remap:
+                - value: true
+                  to: Ready
+                - value: false
+                  to: Check
+            - field: manual
+              label: Gravity
+              remap:
+                - any: true
+                  to: Loaded
+            - field: appWarnings
+              label: Session
+              remap:
+                - any: true
+                  to: Local
+    - Tdarr:
+        icon: sh-tdarr.png
+        href: http://synology.example.lan:8265
+        description: Queue | Workers | Throughput
+        siteMonitor: http://tdarr:8265
+        statusStyle: dot
+        widget:
+          type: tdarr
+          url: http://tdarr:8265
+          hideErrors: true
+    - Portainer:
+        icon: portainer.svg
+        href: http://synology.example.lan:9000
+        description: Node | Engine | Containers
+        siteMonitor: http://portainer:9000
+        statusStyle: dot
+        widget:
+          type: customapi
+          url: http://portainer:9000/api/status
+          refreshInterval: 30000
+          mappings:
+            - field: Version
+              label: Version
+            - field: Version
+              label: State
+              remap:
+                - any: true
+                  to: Online
+            - field: Version
+              label: Node
+              remap:
+                - any: true
+                  to: Local
+    - Update Status:
+        icon: mdi-update
+        href: http://synology.example.lan:8099
+        description: Health | Manual | Warnings
+        siteMonitor: http://update-status
+        statusStyle: dot
+        widget:
+          type: customapi
+          url: http://update-status/status.json
+          refreshInterval: 15000
+          mappings:
+            - field: stackHealthy
+              label: Stack
+              remap:
+                - value: true
+                  to: Healthy
+                - value: false
+                  to: Check
+            - field: manual
+              label: Manual
+              format: size
+            - field: appWarnings
+              label: Warnings
+              format: size
+
+- Download Activity:
     - qBittorrent:
         icon: qbittorrent.svg
-        href: http://localhost:8081
-        description: Torrent client (VPN protected)
+        href: http://synology.example.lan:8081
+        description: Torrents through VPN with live swarm stats
+        siteMonitor: http://gluetun:8081
+        statusStyle: dot
         widget:
           type: qbittorrent
           url: http://gluetun:8081
           username: admin
-          password: your-qbittorrent-password
+          password: change_me_qbit_password
+          hideErrors: true
+
+- Download Services:
     - SABnzbd:
         icon: sabnzbd.svg
-        href: http://localhost:8082
-        description: Usenet client (VPN protected)
+        href: http://synology.example.lan:8082
+        description: Usenet queue, rate, and time remaining
+        siteMonitor: http://gluetun:8080
+        statusStyle: dot
+        widget:
+          type: sabnzbd
+          url: http://gluetun:8080
+          key: change_me_sab_api_key
+          hideErrors: true
     - Prowlarr:
         icon: prowlarr.svg
-        href: http://localhost:9696
-        description: Indexer manager
+        href: http://synology.example.lan:9696
+        description: Indexer health, queries, and grabs
+        siteMonitor: http://prowlarr:9696/ping
+        statusStyle: dot
         widget:
           type: prowlarr
           url: http://prowlarr:9696
-          key: your-prowlarr-api-key
-    - Overseerr:
-        icon: overseerr.svg
-        href: http://localhost:5055
-        description: Media requests
-        widget:
-          type: overseerr
-          url: http://overseerr:5055
-          key: your-overseerr-api-key
-- Photos & Management:
-    - Immich:
-        icon: immich.svg
-        href: http://localhost:2283
-        description: Photo & video management
+          key: change_me_prowlarr_api_key
+          hideErrors: true
+    - Gitea:
+        icon: gitea.svg
+        href: http://synology.example.lan:3001/
+        description: Private Git forge for Harbor and project repos
+        siteMonitor: http://gitea:3000/api/healthz
+        statusStyle: dot
         widget:
           type: customapi
-          url: http://immich-server:2283/api/server/statistics
-          headers:
-            x-api-key: your-immich-api-key
+          url: http://gitea:3000/api/healthz
+          refreshInterval: 30000
           mappings:
-            - field: photos
-              label: Photos
-            - field: videos
-              label: Videos
-    - Bazarr:
-        icon: bazarr.svg
-        href: http://localhost:6767
-        description: Subtitle downloads
-        widget:
-          type: bazarr
-          url: http://bazarr:6767
-          key: your-bazarr-api-key
-    - Portainer:
-        icon: portainer.svg
-        href: http://localhost:9000
-        description: Docker management
-        widget:
-          type: portainer
-          url: http://portainer:9000
-          env: 1
-          key: your-portainer-api-key
-    - Pi-hole:
-        icon: pi-hole.svg
-        href: http://localhost:8080/admin
-        description: Network ad blocker
-        widget:
-          type: pihole
-          url: http://pihole:80
-          key: your-pihole-password
-          version: 6
-- Optimization:
-    - Tdarr:
-        icon: mdi-video-converter
-        href: http://localhost:8265
-        description: Media transcoding
-        widget:
-          type: tdarr
-          url: http://tdarr:8265
+            - field: status
+              label: Health
+            - field: version
+              label: Version

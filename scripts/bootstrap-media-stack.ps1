@@ -596,6 +596,16 @@ function Configure-Qbittorrent {
         random_port       = $false
         upnp              = $false
         queueing_enabled  = $true
+        dont_count_slow_torrents       = $true
+        slow_torrent_dl_rate_threshold = 64
+        slow_torrent_ul_rate_threshold = 4
+        slow_torrent_inactive_timer    = 120
+        max_active_downloads           = 5
+        max_active_torrents            = 10
+        max_active_uploads             = 6
+        max_connec                     = 600
+        max_connec_per_torrent         = 200
+        connection_speed               = 120
     }
 
     Invoke-QbSetPreferences -Session $qbAuth.Session -Preferences $preferences
@@ -619,6 +629,15 @@ function Configure-Qbittorrent {
     $changed = $false
     $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\Interface' -Value 'tun0') -or $changed
     $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\InterfaceName' -Value 'tun0') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\IgnoreSlowTorrentsForQueueing' -Value 'true') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\SlowTorrentsDownloadRate' -Value '64') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\SlowTorrentsUploadRate' -Value '4') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\SlowTorrentsInactivityTimer' -Value '120') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\ConnectionSpeed' -Value '120') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\MaxActiveDownloads' -Value '5') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\MaxActiveTorrents' -Value '10') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\MaxConnections' -Value '600') -or $changed
+    $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'BitTorrent' -Key 'Session\MaxConnectionsPerTorrent' -Value '200') -or $changed
     $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'Preferences' -Key 'WebUI\Address' -Value '*') -or $changed
     $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'Preferences' -Key 'WebUI\AuthSubnetWhitelist' -Value '100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16, 10.0.0.0/8') -or $changed
     $changed = (Set-OrInsert-IniLine -Lines $lines -Section 'Preferences' -Key 'WebUI\AuthSubnetWhitelistEnabled' -Value 'true') -or $changed

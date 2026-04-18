@@ -561,6 +561,7 @@ services:
       - LOG_DIR=/logs
       - CLAMAV_HOST=clamav
       - CLAMAV_PORT=3310
+      - LOCAL_CLAMAV_DB_DIR=/var/lib/clamav
       - FULL_SCAN_INTERVAL=21600
       - MIN_FILE_AGE_SECONDS=900
       - ENABLE_MEDIA_HEADER_VALIDATION=false
@@ -568,6 +569,7 @@ services:
       - ${DATA_ROOT}/downloads:/downloads
       - ${DATA_ROOT}/quarantine:/quarantine
       - ${DOCKER_ROOT}/scanner/logs:/logs
+      - ${DOCKER_ROOT}/clamav:/var/lib/clamav:ro
     healthcheck:
       test: ["CMD-SHELL", "nc -z clamav 3310 || exit 1"]
       interval: 30s

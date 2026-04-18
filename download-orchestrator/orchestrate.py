@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import socket
 import sys
 import time
 import urllib.parse
@@ -37,6 +38,7 @@ def env_csv(name: str, default: str) -> list[str]:
 @dataclass(frozen=True)
 class Config:
     qbit_host: str = os.environ.get("QBIT_HOST", "gluetun")
+    qbit_fallback_hosts: tuple[str, ...] = tuple(env_csv("QBIT_FALLBACK_HOSTS", ""))
     qbit_port: int = env_int("QBIT_PORT", 8081)
     qbit_user: str = os.environ.get("QBIT_USER", "")
     qbit_pass: str = os.environ.get("QBIT_PASS", "")
@@ -59,17 +61,21 @@ class Config:
     refresh_protected_baselines: bool = env_bool("REFRESH_PROTECTED_BASELINES", False)
     reserved_free_gb: float = env_float("RESERVED_FREE_GB", 1)
     emergency_free_gb: float = env_float("EMERGENCY_FREE_GB", 3)
-    low_space_threshold_gb: float = env_float("LOW_SPACE_THRESHOLD_GB", 40)
-    high_space_threshold_gb: float = env_float("HIGH_SPACE_THRESHOLD_GB", 120)
-    max_active_downloads_low: int = env_int("MAX_ACTIVE_DOWNLOADS_LOW", 1)
-    max_active_downloads_medium: int = env_int("MAX_ACTIVE_DOWNLOADS_MEDIUM", 3)
-    max_active_downloads_high: int = env_int("MAX_ACTIVE_DOWNLOADS_HIGH", 6)
-    healthy_availability_floor: float = env_float("HEALTHY_AVAILABILITY_FLOOR", 1.1)
+    low_space_threshold_gb: float = env_float("LOW_SPACE_THRESHOLD_GB", 100)
+    high_space_threshold_gb: float = env_float("HIGH_SPACE_THRESHOLD_GB", 1000)
+    max_active_downloads_low: int = env_int("MAX_ACTIVE_DOWNLOADS_LOW", 2)
+    max_active_downloads_medium: int = env_int("MAX_ACTIVE_DOWNLOADS_MEDIUM", 6)
+    max_active_downloads_high: int = env_int("MAX_ACTIVE_DOWNLOADS_HIGH", 12)
+    expansive_probe_slots: int = env_int("EXPANSIVE_PROBE_SLOTS", 6)
+    healthy_availability_floor: float = env_float("HEALTHY_AVAILABILITY_FLOOR", 0.25)
     completion_priority_progress: float = env_float("COMPLETION_PRIORITY_PROGRESS", 0.8)
     completion_priority_remaining_gb: float = env_float("COMPLETION_PRIORITY_REMAINING_GB", 8)
     completion_reserve_progress: float = env_float("COMPLETION_RESERVE_PROGRESS", 0.95)
     completion_reserve_remaining_gb: float = env_float("COMPLETION_RESERVE_REMAINING_GB", 4)
     partial_progress_priority_floor: float = env_float("PARTIAL_PROGRESS_PRIORITY_FLOOR", 0.25)
+    partial_resume_availability_floor: float = env_float("PARTIAL_RESUME_AVAILABILITY_FLOOR", 0.02)
+    partial_resume_progress_floor: float = env_float("PARTIAL_RESUME_PROGRESS_FLOOR", 0.05)
+    cold_dead_backlog_grace_seconds: int = env_int("COLD_DEAD_BACKLOG_GRACE_SECONDS", 14400)
     probe_rotation_seconds: int = env_int("PROBE_ROTATION_SECONDS", 120)
     probe_quarantine_seconds: int = env_int("PROBE_QUARANTINE_SECONDS", 900)
     stall_probe_seconds: int = env_int("STALL_PROBE_SECONDS", 240)
@@ -114,8 +120,8 @@ class Config:
     max_qbit_stall_recovery_attempts_per_hash: int = env_int("MAX_QBIT_STALL_RECOVERY_ATTEMPTS_PER_HASH", 4)
     control_stability_cycles: int = env_int("CONTROL_STABILITY_CYCLES", 2)
     pref_stability_cycles: int = env_int("PREF_STABILITY_CYCLES", 2)
-    min_torrent_action_interval_seconds: int = env_int("MIN_TORRENT_ACTION_INTERVAL_SECONDS", 300)
-    min_rotation_action_interval_seconds: int = env_int("MIN_ROTATION_ACTION_INTERVAL_SECONDS", 60)
+    min_torrent_action_interval_seconds: int = env_int("MIN_TORRENT_ACTION_INTERVAL_SECONDS", 60)
+    min_rotation_action_interval_seconds: int = env_int("MIN_ROTATION_ACTION_INTERVAL_SECONDS", 30)
     min_pref_write_interval_seconds: int = env_int("MIN_PREF_WRITE_INTERVAL_SECONDS", 900)
     max_torrent_actions_per_cycle: int = env_int("MAX_TORRENT_ACTIONS_PER_CYCLE", 8)
     qbit_write_allowlist: tuple[str, ...] = tuple(
@@ -150,6 +156,28 @@ class Config:
 
 
 CONFIG = Config()
+
+if CONFIG.low_space_threshold_gb < 100:
+    object.__setattr__(CONFIG, "low_space_threshold_gb", 100.0)
+if CONFIG.high_space_threshold_gb < 1000:
+    object.__setattr__(CONFIG, "high_space_threshold_gb", 1000.0)
+if CONFIG.emergency_free_gb < 25:
+    object.__setattr__(CONFIG, "emergency_free_gb", 25.0)
+if CONFIG.max_active_downloads_low < 2:
+    object.__setattr__(CONFIG, "max_active_downloads_low", 2)
+if CONFIG.max_active_downloads_medium < 6:
+    object.__setattr__(CONFIG, "max_active_downloads_medium", 6)
+if CONFIG.max_active_downloads_high < 12:
+    object.__setattr__(CONFIG, "max_active_downloads_high", 12)
+if CONFIG.expansive_probe_slots < 6:
+    object.__setattr__(CONFIG, "expansive_probe_slots", 6)
+if CONFIG.healthy_availability_floor > 0.25:
+    object.__setattr__(CONFIG, "healthy_availability_floor", 0.25)
+if CONFIG.min_torrent_action_interval_seconds > 60:
+    object.__setattr__(CONFIG, "min_torrent_action_interval_seconds", 60)
+if CONFIG.min_rotation_action_interval_seconds > 30:
+    object.__setattr__(CONFIG, "min_rotation_action_interval_seconds", 30)
+
 BASE_URL = f"http://{CONFIG.qbit_host}:{CONFIG.qbit_port}"
 STATE_DIR = Path(CONFIG.state_dir)
 HEARTBEAT_PATH = STATE_DIR / "heartbeat"
@@ -214,6 +242,14 @@ ACTIVE_STATES = {
     "queuedDL",
 }
 
+PASSIVE_BACKLOG_STATES = {
+    "pausedDL",
+    "stoppedDL",
+    "queuedDL",
+    "metaDL",
+    "checkingDL",
+}
+
 DOWNLOADING_STATES = {
     "downloading",
     "forcedDL",
@@ -229,6 +265,44 @@ DOWNLOADING_STATES = {
 
 def log(message: str) -> None:
     print(f"[download-orchestrator] {message}", flush=True)
+
+
+def docker_default_gateway() -> str | None:
+    route_path = Path("/proc/net/route")
+    if not route_path.exists():
+        return None
+    try:
+        lines = route_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return None
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        destination, gateway = parts[1], parts[2]
+        if destination != "00000000":
+            continue
+        try:
+            packed = bytes.fromhex(gateway)
+            return socket.inet_ntoa(packed[::-1])
+        except Exception:
+            continue
+    return None
+
+
+def qbit_host_candidates() -> list[str]:
+    candidates: list[str] = []
+
+    def add(host: str | None) -> None:
+        value = str(host or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    add(CONFIG.qbit_host)
+    for host in CONFIG.qbit_fallback_hosts:
+        add(host)
+    add(docker_default_gateway())
+    return candidates
 
 
 def now_ts() -> int:
@@ -305,27 +379,71 @@ class StateStore:
 
 class QBClient:
     def __init__(self) -> None:
+        self.host_candidates = qbit_host_candidates()
+        self.cookies = CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies))
+        self.base_url: str | None = None
+
+    def _reset_session(self) -> None:
         self.cookies = CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies))
 
-    def _request(self, method: str, path: str, data: dict[str, Any] | None = None) -> bytes:
+    def _base_url_for_host(self, host: str) -> str:
+        return f"http://{host}:{CONFIG.qbit_port}"
+
+    def _request_with_base(
+        self,
+        base_url: str,
+        method: str,
+        path: str,
+        data: dict[str, Any] | None = None,
+    ) -> bytes:
         payload = None
         headers: dict[str, str] = {}
         if data is not None:
             payload = urllib.parse.urlencode(data).encode()
             headers["Content-Type"] = "application/x-www-form-urlencoded"
-        request = urllib.request.Request(f"{BASE_URL}{path}", data=payload, headers=headers, method=method)
+        request = urllib.request.Request(f"{base_url}{path}", data=payload, headers=headers, method=method)
         with self.opener.open(request, timeout=20) as response:
             return response.read()
 
-    def login(self) -> None:
-        body = self._request(
+    def _login_to_host(self, host: str) -> None:
+        self._reset_session()
+        candidate_base_url = self._base_url_for_host(host)
+        body = self._request_with_base(
+            candidate_base_url,
             "POST",
             "/api/v2/auth/login",
             {"username": CONFIG.qbit_user, "password": CONFIG.qbit_pass},
         ).decode()
         if body.strip() != "Ok.":
             raise RuntimeError(f"qBittorrent auth failed: {body!r}")
+        if self.base_url != candidate_base_url:
+            log(f"qBittorrent endpoint={candidate_base_url}")
+        self.base_url = candidate_base_url
+
+    def login(self) -> None:
+        last_error: Exception | None = None
+        for host in self.host_candidates:
+            try:
+                self._login_to_host(host)
+                return
+            except Exception as exc:
+                last_error = exc
+        raise RuntimeError(f"Unable to reach qBittorrent via {self.host_candidates}: {last_error}")
+
+    def _request(self, method: str, path: str, data: dict[str, Any] | None = None) -> bytes:
+        if not self.base_url:
+            self.login()
+        assert self.base_url is not None
+        try:
+            return self._request_with_base(self.base_url, method, path, data)
+        except Exception:
+            previous_base_url = self.base_url
+            self.login()
+            if self.base_url != previous_base_url:
+                log(f"qBittorrent failover={self.base_url}")
+            return self._request_with_base(self.base_url, method, path, data)
 
     def preferences(self) -> dict[str, Any]:
         return json.loads(self._request("GET", "/api/v2/app/preferences").decode())
@@ -793,12 +911,22 @@ def is_completion_priority(torrent: dict[str, Any]) -> bool:
 
 def should_reserve_completion_priority_active(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     state = str(torrent.get("state") or "")
-    if state not in {"downloading", "forcedDL"}:
+    if state not in {"downloading", "forcedDL", "stalledDL"}:
         return False
     if bool(stall_meta.get("longStalled")):
         return False
     progress = progress_value(torrent)
     remaining_gb = gb_from_bytes(remaining_bytes(torrent))
+    if state == "stalledDL":
+        reserve_worthy = progress >= max(CONFIG.completion_priority_progress, 0.8) or remaining_gb <= 0.5
+        if not reserve_worthy:
+            return False
+        return (
+            download_speed(torrent) > 0
+            or seed_count(torrent) > 0
+            or availability_value(torrent) > 0
+            or remaining_gb <= 0.5
+        )
     return progress >= CONFIG.completion_reserve_progress or remaining_gb <= CONFIG.completion_reserve_remaining_gb
 
 
@@ -826,8 +954,40 @@ def is_dead_swarm(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     return seed_count(torrent) <= 0 and availability_value(torrent) <= 0
 
 
+def backlog_reference_ts(torrent: dict[str, Any]) -> int:
+    return positive_timestamp(torrent.get("last_activity"), torrent.get("added_on"))
+
+
+def is_cold_dead_backlog_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if not is_manageable(torrent):
+        return False
+
+    state = str(torrent.get("state") or "")
+    if state not in PASSIVE_BACKLOG_STATES:
+        return False
+
+    if progress_value(torrent) > 0:
+        return False
+
+    if download_speed(torrent) > 0:
+        return False
+
+    if seed_count(torrent) > 0 or availability_value(torrent) > 0:
+        return False
+
+    reference_ts = backlog_reference_ts(torrent)
+    if reference_ts > 0 and (now_ts() - reference_ts) < CONFIG.cold_dead_backlog_grace_seconds:
+        return False
+
+    return is_dead_swarm(torrent, stall_meta)
+
+
 def is_probe_rotation_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     if bool(torrent.get("force_start")) and not CONFIG.manage_force_started:
+        return False
+    if should_reserve_completion_priority_active(torrent, stall_meta):
+        return False
+    if is_near_complete_probe_candidate(torrent, stall_meta):
         return False
     if not is_active_download_state(str(torrent.get("state") or "")):
         return False
@@ -839,6 +999,10 @@ def is_probe_rotation_candidate(torrent: dict[str, Any], stall_meta: dict[str, A
 def should_quarantine_probe_on_stop(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     if bool(torrent.get("force_start")) and not CONFIG.manage_force_started:
         return False
+    if should_reserve_completion_priority_active(torrent, stall_meta):
+        return False
+    if is_near_complete_probe_candidate(torrent, stall_meta):
+        return False
     if not is_active_download_state(str(torrent.get("state") or "")):
         return False
     if remaining_bytes(torrent) <= 0:
@@ -846,6 +1010,22 @@ def should_quarantine_probe_on_stop(torrent: dict[str, Any], stall_meta: dict[st
     if download_speed(torrent) > 0:
         return False
     return True
+
+
+def is_near_complete_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if is_missing_files_state(torrent):
+        return False
+    if not has_metadata(torrent):
+        return False
+    if bool(stall_meta.get("longStalled")) or bool(stall_meta.get("probeStalled")):
+        return False
+    if progress_value(torrent) < CONFIG.completion_reserve_progress:
+        return False
+    if download_speed(torrent) > 0:
+        return True
+    if seed_count(torrent) > 0:
+        return True
+    return availability_value(torrent) > 0.05
 
 
 def prune_probe_quarantine(store: StateStore) -> dict[str, int]:
@@ -1084,13 +1264,20 @@ def target_active_downloads(
     }[mode]
 
     healthy_pool = workload_metrics["healthyCandidateCount"]
+    partial_resume_pool = workload_metrics.get("partialResumeCount", healthy_pool)
     completion_ready = workload_metrics["completionPriorityCount"]
     budget_fit_count = count_budget_fit_candidates(candidates, mode, free_bytes, stall_metadata)
 
     desired = min(base_cap, viable_count)
 
     if healthy_pool > 0:
-        desired = min(desired, healthy_pool)
+        health_cap = healthy_pool
+        if mode == "expansive":
+            probe_slots = min(CONFIG.expansive_probe_slots, max(0, viable_count - healthy_pool))
+            if workload_metrics["deadSwarmCount"] >= max(50, viable_count - healthy_pool):
+                probe_slots = min(probe_slots, 1)
+            health_cap += probe_slots
+        desired = min(desired, health_cap)
 
     if budget_fit_count > 0:
         desired = min(desired, budget_fit_count)
@@ -1100,7 +1287,11 @@ def target_active_downloads(
     elif mode == "balanced" and completion_ready >= 2 and healthy_pool >= 2:
         desired = max(desired, min(2, budget_fit_count or 2, healthy_pool))
     elif mode == "expansive":
-        desired = max(desired, min(CONFIG.max_active_downloads_medium, healthy_pool or viable_count))
+        expansive_resume_cap = max(
+            healthy_pool + min(CONFIG.expansive_probe_slots, max(0, viable_count - healthy_pool)),
+            min(partial_resume_pool, CONFIG.max_active_downloads_high),
+        )
+        desired = max(desired, min(CONFIG.max_active_downloads_high, expansive_resume_cap or viable_count))
 
     if desired <= 0 and viable_count > 0:
         desired = 1
@@ -1133,6 +1324,11 @@ def collect_workload_metrics(candidates: list[dict[str, Any]], stall_metadata: d
         for torrent in candidates
         if is_swarm_healthy(torrent, stall_metadata.get(torrent["hash"], {"stalledSeconds": 0, "longStalled": False}))
     ]
+    partial_resume = [
+        torrent
+        for torrent in candidates
+        if is_partial_resume_candidate(torrent, stall_metadata.get(torrent["hash"], {"stalledSeconds": 0, "longStalled": False}))
+    ]
     dead_swarm = [
         torrent
         for torrent in candidates
@@ -1159,6 +1355,7 @@ def collect_workload_metrics(candidates: list[dict[str, Any]], stall_metadata: d
         "missingFilesCount": len(missing_files),
         "highAvailabilityCount": len(high_availability),
         "healthyCandidateCount": len(healthy_candidates),
+        "partialResumeCount": len(partial_resume),
         "deadSwarmCount": len(dead_swarm),
         "completionPriorityCount": len(completion_priority),
         "totalDownloadSpeed": total_speed,
@@ -1283,14 +1480,29 @@ def selection_key(torrent: dict[str, Any], mode: str, stall_meta: dict[str, Any]
     )
 
 
-def is_viable_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+def is_partial_resume_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if is_missing_files_state(torrent):
+        return False
+    if not has_metadata(torrent):
+        return False
+    if bool(stall_meta.get("probeStalled")) or bool(stall_meta.get("longStalled")):
+        return False
+    return (
+        progress_value(torrent) >= CONFIG.partial_resume_progress_floor
+        and availability_value(torrent) >= CONFIG.partial_resume_availability_floor
+    )
+
+
+def is_viable_probe_candidate(mode: str, torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     if download_speed(torrent) > 0:
         return True
     if is_swarm_healthy(torrent, stall_meta):
         return True
     if seed_count(torrent) > 0:
         return True
-    return availability_value(torrent) >= 1.0
+    if availability_value(torrent) >= 1.0:
+        return True
+    return mode == "expansive" and is_partial_resume_candidate(torrent, stall_meta)
 
 
 def is_finish_priority_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
@@ -1315,7 +1527,7 @@ def is_finish_priority_probe_candidate(torrent: dict[str, Any], stall_meta: dict
     return availability_value(torrent) > 0
 
 
-def is_best_effort_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+def is_best_effort_probe_candidate(mode: str, torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
     if is_missing_files_state(torrent):
         return False
     if bool(stall_meta.get("longStalled")) or bool(stall_meta.get("probeStalled")):
@@ -1329,11 +1541,26 @@ def is_best_effort_probe_candidate(torrent: dict[str, Any], stall_meta: dict[str
         return True
     if availability >= 0.15:
         return True
-    if progress >= 0.15 and availability > 0:
+    if mode == "expansive" and is_partial_resume_candidate(torrent, stall_meta):
         return True
     if is_completion_priority(torrent) and progress >= 0.5 and availability > 0.05:
         return True
     return False
+
+
+def is_metadata_bootstrap_candidate(mode: str, torrent: dict[str, Any], stall_meta: dict[str, Any]) -> bool:
+    if mode != "expansive":
+        return False
+    if is_missing_files_state(torrent):
+        return False
+    if has_metadata(torrent):
+        return False
+    if bool(stall_meta.get("longStalled")) or bool(stall_meta.get("probeStalled")):
+        return False
+    state = str(torrent.get("state") or "")
+    if state not in {"pausedDL", "stoppedDL", "queuedDL", "metaDL", "checkingDL"}:
+        return False
+    return int(torrent.get("trackers_count", 0) or 0) > 0
 
 
 def choose_allowed(
@@ -1351,6 +1578,15 @@ def choose_allowed(
     budget_bytes = max(0, free_bytes - reserve_bytes)
     allowed: list[dict[str, Any]] = []
     projected_bytes = 0
+    active_downloader_count = sum(
+        1 for torrent in candidates if str(torrent.get("state") or "") in {"downloading", "forcedDL"}
+    )
+    moving_downloader_count = sum(1 for torrent in candidates if download_speed(torrent) > 0)
+    bootstrap_target = 0
+    if mode == "expansive" and active_downloader_count < target:
+        underfilled = moving_downloader_count <= 2 or active_downloader_count <= max(2, target // 2)
+        if underfilled:
+            bootstrap_target = min(target, max(6, min(CONFIG.expansive_probe_slots, 8)))
 
     sorted_candidates = sorted(
         candidates,
@@ -1383,21 +1619,78 @@ def choose_allowed(
             torrent["hash"],
             {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
         )
+        viable = is_viable_probe_candidate(mode, torrent, stall_meta)
+        bootstrap_candidate = (
+            bootstrap_target > len(allowed)
+            and (
+                is_finish_priority_probe_candidate(torrent, stall_meta)
+                or is_best_effort_probe_candidate(mode, torrent, stall_meta)
+                or is_metadata_bootstrap_candidate(mode, torrent, stall_meta)
+            )
+        )
 
         if not allowed:
             finish_preferred = mode in {"emergency", "constrained", "focused"} and is_finish_priority_probe_candidate(
                 torrent, stall_meta
             )
-            if not finish_preferred and not is_viable_probe_candidate(torrent, stall_meta):
+            if not finish_preferred and not viable and not bootstrap_candidate:
                 continue
             allowed.append(torrent)
             projected_bytes = next_projection
             continue
 
+        if not viable and not bootstrap_candidate:
+            continue
+
         if unknown_size:
+            if bootstrap_candidate:
+                allowed.append(torrent)
+                projected_bytes = next_projection
             continue
 
         if next_projection <= budget_bytes:
+            allowed.append(torrent)
+            projected_bytes = next_projection
+
+    if bootstrap_target > len(allowed):
+        existing_hashes = {torrent["hash"] for torrent in allowed}
+        bootstrap_pool = [
+            torrent
+            for torrent in selection_pool
+            if torrent["hash"] not in existing_hashes
+            and (
+                is_finish_priority_probe_candidate(
+                    torrent,
+                    stall_metadata.get(
+                        torrent["hash"],
+                        {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+                    ),
+                )
+                or is_best_effort_probe_candidate(
+                    mode,
+                    torrent,
+                    stall_metadata.get(
+                        torrent["hash"],
+                        {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+                    ),
+                )
+                or is_metadata_bootstrap_candidate(
+                    mode,
+                    torrent,
+                    stall_metadata.get(
+                        torrent["hash"],
+                        {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+                    ),
+                )
+            )
+        ]
+        for torrent in bootstrap_pool:
+            if len(allowed) >= bootstrap_target:
+                break
+            remaining = int(torrent.get("amount_left", 0) or 0)
+            next_projection = projected_bytes + max(remaining, 0)
+            if remaining > 0 and next_projection > budget_bytes:
+                continue
             allowed.append(torrent)
             projected_bytes = next_projection
 
@@ -1408,6 +1701,7 @@ def choose_allowed(
         torrent
         for torrent in selection_pool
         if is_best_effort_probe_candidate(
+            mode,
             torrent,
             stall_metadata.get(
                 torrent["hash"],
@@ -2756,6 +3050,7 @@ def update_stability_guard(
     to_start: list[str],
     pref_updates: dict[str, int],
     rotation_urgent: bool = False,
+    no_active_downloads: bool = False,
 ) -> dict[str, Any]:
     stability = store.runtime.setdefault("stability", {})
     now = now_ts()
@@ -2804,7 +3099,7 @@ def update_stability_guard(
     )
     torrent_control_ready = (
         torrent_plan_present
-        and selection_stable_cycles >= CONFIG.control_stability_cycles
+        and (no_active_downloads or selection_stable_cycles >= CONFIG.control_stability_cycles)
         and torrent_action_cooldown_remaining <= 0
     )
 
@@ -2979,9 +3274,22 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
     guard_ok, guard_meta = tunnel_guard(prefs, forwarded_port)
     protected_ok, protected_meta = protected_settings_guard(store, prefs, categories)
 
-    candidates = [torrent for torrent in torrents if is_manageable(torrent)]
+    manageable_torrents = [torrent for torrent in torrents if is_manageable(torrent)]
+    stall_metadata = {torrent["hash"]: update_stall_state(store, torrent) for torrent in manageable_torrents}
+    ignored_dead_noise = [
+        torrent
+        for torrent in manageable_torrents
+        if is_cold_dead_backlog_candidate(
+            torrent,
+            stall_metadata.get(
+                torrent["hash"],
+                {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            ),
+        )
+    ]
+    ignored_dead_hashes = {torrent["hash"] for torrent in ignored_dead_noise}
+    candidates = [torrent for torrent in manageable_torrents if torrent["hash"] not in ignored_dead_hashes]
     candidate_by_hash = {torrent["hash"]: torrent for torrent in candidates}
-    stall_metadata = {torrent["hash"]: update_stall_state(store, torrent) for torrent in candidates}
     reserved_downloaders = reserved_active_downloads(torrents, stall_metadata)
     weak_reserved_downloaders = weak_reserved_active_downloads(torrents, stall_metadata)
     workload_metrics = collect_workload_metrics(candidates, stall_metadata)
@@ -3038,7 +3346,15 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         desired_active_downloads_total,
         workload_metrics,
     )
-    stability_meta = update_stability_guard(store, mode, to_stop, to_start, pref_updates, rotation_urgent)
+    stability_meta = update_stability_guard(
+        store,
+        mode,
+        to_stop,
+        to_start,
+        pref_updates,
+        rotation_urgent,
+        workload_metrics.get("movingCount", 0) <= 0,
+    )
     start_hashes = set(to_start)
     stop_hashes = set(to_stop)
     if action_guard_ok:
@@ -3111,6 +3427,7 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
         "policy": {
             "mode": mode,
             "candidateCount": viable_count,
+            "ignoredColdDeadCount": len(ignored_dead_noise),
             "allowedCount": len(allowed),
             "desiredActiveDownloads": desired_active_downloads_total,
             "desiredManagedDownloads": desired_active_downloads,
@@ -3136,6 +3453,20 @@ def reconcile_cycle(store: StateStore) -> dict[str, Any]:
             "quarantineCount": len(prune_probe_quarantine(store)),
             "rotationSeconds": CONFIG.probe_rotation_seconds,
             "quarantineSeconds": CONFIG.probe_quarantine_seconds,
+        },
+        "candidateNoise": {
+            "ignoredColdDeadCount": len(ignored_dead_noise),
+            "graceSeconds": CONFIG.cold_dead_backlog_grace_seconds,
+            "examples": [
+                summarize_torrent(
+                    torrent,
+                    stall_metadata.get(
+                        torrent["hash"],
+                        {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+                    ),
+                )
+                for torrent in ignored_dead_noise[:10]
+            ],
         },
         "qbitPreferenceAudit": {
             "snapshotPath": str(QBIT_PREFS_PATH),
@@ -3221,6 +3552,10 @@ def main() -> int:
             reconcile_cycle(store)
         except Exception as exc:
             log(f"ERROR {exc}")
+        finally:
+            # Keep the container healthy as long as the worker loop itself is alive,
+            # even if an individual cycle hits a transient qB/Arr timeout.
+            store.heartbeat()
 
         if CONFIG.run_once:
             return 0

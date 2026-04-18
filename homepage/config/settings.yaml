@@ -1,18 +1,21 @@
-﻿---
+---
 title: Harbor Media Server
 theme: dark
 color: slate
-headerStyle: clean
+headerStyle: boxedWidgets
 layout:
-  Media:
-    style: row
-    columns: 4
-  Downloads:
+  Streaming & Requests:
     style: row
     columns: 3
-  Photos & Management:
+  Library Automation:
     style: row
     columns: 4
-  Optimization:
+  Operations & Health:
+    style: row
+    columns: 5
+  Download Activity:
     style: row
     columns: 1
+  Download Services:
+    style: row
+    columns: 3

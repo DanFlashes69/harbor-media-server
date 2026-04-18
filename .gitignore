@@ -18,10 +18,16 @@ gluetun/*.pem
 # Docker runtime data (generated at runtime, not config)
 */data/
 */logs/
+logs/
+reports/
 backups/
 _backup_*/
 retro-scan/
 *.zip
+synology-sync-logs/
+synology-parity/
+tmp-orchestrator-live-patch/
+synology-services-api*.json
 
 # Tdarr runtime data
 tdarr/server/

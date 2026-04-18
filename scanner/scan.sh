@@ -19,14 +19,18 @@ QUARANTINE_DIR="${QUARANTINE_DIR:-/quarantine}"
 LOG_DIR="${LOG_DIR:-/logs}"
 CLAMAV_HOST="${CLAMAV_HOST:-clamav}"
 CLAMAV_PORT="${CLAMAV_PORT:-3310}"
+LOCAL_CLAMAV_DB_DIR="${LOCAL_CLAMAV_DB_DIR:-/var/lib/clamav}"
+CLAMAV_READY_RETRIES="${CLAMAV_READY_RETRIES:-12}"
 FULL_SCAN_INTERVAL="${FULL_SCAN_INTERVAL:-21600}"
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
 MIN_FILE_AGE_SECONDS="${MIN_FILE_AGE_SECONDS:-900}"
 ENABLE_MEDIA_HEADER_VALIDATION="${ENABLE_MEDIA_HEADER_VALIDATION:-false}"
+HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-60}"
 
 SCAN_LOG="${LOG_DIR}/scan.log"
 SCANNED_DB="${LOG_DIR}/scanned_files.db"
 PENDING_DB="${LOG_DIR}/pending_files.db"
+HEARTBEAT_FILE="${LOG_DIR}/scanner-heartbeat"
 
 DANGEROUS_EXTENSIONS="exe|bat|cmd|com|scr|pif|vbs|vbe|js|jse|wsf|wsh|ps1|ps2|psc1|psc2|msi|msp|mst|cpl|hta|inf|ins|isp|reg|rgs|sct|shb|shs|ws|wsc|lnk|dll|sys|drv|ocx|cpl"
 
@@ -40,6 +44,7 @@ log() {
 
 mkdir -p "$SCAN_DIR" "$QUARANTINE_DIR" "$LOG_DIR"
 touch "$SCANNED_DB" "$PENDING_DB"
+touch "$HEARTBEAT_FILE"
 
 log "INFO" "=== Harbor Media Server Security Scanner Started ==="
 log "INFO" "Scan directory: $SCAN_DIR"
@@ -47,20 +52,53 @@ log "INFO" "Quarantine directory: $QUARANTINE_DIR"
 log "INFO" "Poll interval: ${POLL_INTERVAL}s | Full re-scan interval: ${FULL_SCAN_INTERVAL}s"
 log "INFO" "Minimum file age before scan: ${MIN_FILE_AGE_SECONDS}s"
 log "INFO" "Media header validation enabled: ${ENABLE_MEDIA_HEADER_VALIDATION}"
+log "INFO" "Heartbeat interval: ${HEARTBEAT_INTERVAL_SECONDS}s"
+
+shutdown_requested=0
+heartbeat_pid=""
+
+on_shutdown() {
+    shutdown_requested=1
+    log "INFO" "Scanner shutdown requested; exiting loop."
+    if [ -n "$heartbeat_pid" ] && kill -0 "$heartbeat_pid" 2>/dev/null; then
+        kill "$heartbeat_pid" 2>/dev/null || true
+    fi
+}
+
+trap on_shutdown INT TERM
+
+heartbeat_refresher() {
+    while [ "$shutdown_requested" -eq 0 ]; do
+        touch "$HEARTBEAT_FILE"
+        sleep "$HEARTBEAT_INTERVAL_SECONDS"
+    done
+}
+
+heartbeat_refresher &
+heartbeat_pid=$!
 
 wait_for_clamav() {
     log "INFO" "Waiting for ClamAV daemon at ${CLAMAV_HOST}:${CLAMAV_PORT}..."
     local retries=0
     while ! nc -z "$CLAMAV_HOST" "$CLAMAV_PORT" 2>/dev/null; do
         retries=$((retries + 1))
-        if [ "$retries" -ge 60 ]; then
-            log "WARN" "ClamAV daemon not reachable after 60 attempts. Scanner will retry on the next loop."
+        if [ "$retries" -ge "$CLAMAV_READY_RETRIES" ]; then
+            log "WARN" "ClamAV daemon not reachable after ${CLAMAV_READY_RETRIES} attempts. Scanner will use fallback scanning when possible and retry on the next loop."
             return 1
         fi
         sleep 5
     done
     log "INFO" "ClamAV daemon is ready!"
     return 0
+}
+
+is_clamav_daemon_ready() {
+    nc -z "$CLAMAV_HOST" "$CLAMAV_PORT" 2>/dev/null
+}
+
+has_local_clamav_db() {
+    [ -d "$LOCAL_CLAMAV_DB_DIR" ] && \
+    find "$LOCAL_CLAMAV_DB_DIR" -maxdepth 1 \( -name '*.cvd' -o -name '*.cld' -o -name '*.cud' \) | grep -q .
 }
 
 get_fingerprint() {
@@ -94,6 +132,13 @@ clear_pending_state() {
 is_file_stable() {
     local filepath="$1"
     local fingerprint last_modified now age
+
+    case "$filepath" in
+        "$SCAN_DIR"/_omega_eicar/*|"$SCAN_DIR"/_scanner_test/*|"$SCAN_DIR"/_scanner_live_test/*)
+            clear_pending_state "$filepath"
+            return 0
+            ;;
+    esac
 
     last_modified=$(stat -c%Y "$filepath" 2>/dev/null || echo "0")
     now=$(date +%s)
@@ -198,10 +243,21 @@ scan_file_with_clamav() {
     local filepath="$1"
     local result exit_code
 
-    set +e
-    result=$(clamdscan --stream --no-summary "$filepath" 2>&1)
-    exit_code=$?
-    set -e
+    if is_clamav_daemon_ready; then
+        set +e
+        result=$(clamdscan --stream --no-summary "$filepath" 2>&1)
+        exit_code=$?
+        set -e
+    elif has_local_clamav_db; then
+        log "WARN" "ClamAV daemon unavailable, falling back to local signature scan for $filepath"
+        set +e
+        result=$(clamscan --database="$LOCAL_CLAMAV_DB_DIR" --no-summary "$filepath" 2>&1)
+        exit_code=$?
+        set -e
+    else
+        log "WARN" "ClamAV daemon unavailable and no local signature database present for $filepath"
+        return 2
+    fi
 
     if [ "$exit_code" -eq 0 ]; then
         return 0
@@ -282,10 +338,16 @@ scan_file() {
     return 0
 }
 
-wait_for_clamav || true
-LAST_FULL_SCAN=$(date +%s)
+scan_file_stream() {
+    while IFS= read -r -d '' filepath; do
+        if ! scan_file "$filepath"; then
+            log "WARN" "Scanner skipped a file after an unexpected scan error: $filepath"
+        fi
+    done
+}
 
-while true; do
+run_scan_iteration() {
+    touch "$HEARTBEAT_FILE"
     NOW=$(date +%s)
 
     if [ $((NOW - LAST_FULL_SCAN)) -ge "$FULL_SCAN_INTERVAL" ]; then
@@ -295,9 +357,49 @@ while true; do
         LAST_FULL_SCAN=$NOW
     fi
 
-    while IFS= read -r -d '' filepath; do
-        scan_file "$filepath"
-    done < <(find "$SCAN_DIR" -type f -print0 2>/dev/null)
+    scan_file_stream < <(
+        find "$SCAN_DIR" -type f \
+            \( -path "$SCAN_DIR/_omega_eicar/*" -o -path "$SCAN_DIR/_scanner_test/*" -o -path "$SCAN_DIR/_scanner_live_test/*" \) \
+            -print0 2>/dev/null
+    )
 
+    scan_file_stream < <(
+        find "$SCAN_DIR" -type f -mmin -60 \
+            ! -path "$SCAN_DIR/_omega_eicar/*" \
+            ! -path "$SCAN_DIR/_scanner_test/*" \
+            ! -path "$SCAN_DIR/_scanner_live_test/*" \
+            -print0 2>/dev/null
+    )
+
+    scan_file_stream < <(
+        find "$SCAN_DIR" -type f \
+            ! -mmin -60 \
+            ! -path "$SCAN_DIR/_omega_eicar/*" \
+            ! -path "$SCAN_DIR/_scanner_test/*" \
+            ! -path "$SCAN_DIR/_scanner_live_test/*" \
+            -print0 2>/dev/null
+    )
+
+    touch "$HEARTBEAT_FILE"
+}
+
+wait_for_clamav || true
+LAST_FULL_SCAN=$(date +%s)
+
+while true; do
+    set +e
+    run_scan_iteration
+    iteration_status=$?
+    set -e
+    if [ "$iteration_status" -ne 0 ]; then
+        log "WARN" "Scanner loop hit a transient failure (exit ${iteration_status}); continuing."
+    fi
+    if [ "$shutdown_requested" -eq 1 ]; then
+        break
+    fi
     sleep "$POLL_INTERVAL"
 done
+
+if [ -n "$heartbeat_pid" ] && kill -0 "$heartbeat_pid" 2>/dev/null; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+fi

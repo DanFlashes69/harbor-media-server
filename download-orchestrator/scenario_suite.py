@@ -114,8 +114,9 @@ class OrchestratorScenarioTests(unittest.TestCase):
                     desired = orch.managed_active_download_budget(desired_total, reserved_count, len(candidates))
                     budget_fit = orch.count_budget_fit_candidates(candidates, mode, int(free_gb * 1024**3), stall)
                     with self.subTest(free_gb=free_gb, healthy_count=healthy_count, reserved_count=reserved_count):
+                        healthy_cap = healthy_count + (orch.CONFIG.expansive_probe_slots if mode == "expansive" else 0)
                         self.assertGreaterEqual(desired, 0)
-                        self.assertLessEqual(desired, healthy_count)
+                        self.assertLessEqual(desired, healthy_cap)
                         self.assertLessEqual(desired, budget_fit if budget_fit > 0 else healthy_count)
                         if reserved_count >= 1 and mode in {"focused", "emergency", "constrained"}:
                             self.assertLessEqual(desired, max(0, healthy_count - 0))
@@ -168,6 +169,158 @@ class OrchestratorScenarioTests(unittest.TestCase):
         metrics = orch.collect_workload_metrics(candidates, stall)
         desired = orch.target_active_downloads("expansive", candidates, int(250 * 1024**3), stall, metrics)
         self.assertGreaterEqual(desired, 3)
+
+    def test_expansive_mode_keeps_probe_headroom_when_only_a_few_healthy_swarms_exist(self) -> None:
+        candidates = [
+            make_torrent(
+                f"healthy-{index}",
+                f"Healthy {index}",
+                state="queuedDL",
+                progress=0.35,
+                amount_left=8 * 1024**3,
+                num_seeds=3,
+                availability=2.0,
+            )
+            for index in range(3)
+        ]
+        candidates.extend(
+            make_torrent(
+                f"probe-{index}",
+                f"Probe {index}",
+                state="stoppedDL",
+                progress=0.15,
+                amount_left=10 * 1024**3,
+                num_seeds=0,
+                availability=0.2,
+            )
+            for index in range(4)
+        )
+        stall = {torrent["hash"]: {"stalledSeconds": 0, "longStalled": False, "probeStalled": False} for torrent in candidates}
+        metrics = orch.collect_workload_metrics(candidates, stall)
+        desired = orch.target_active_downloads("expansive", candidates, int(500 * 1024**3), stall, metrics)
+        self.assertEqual(desired, 7)
+
+    def test_partial_resume_candidates_are_tracked_separately_from_healthy_pool(self) -> None:
+        candidates = [
+            make_torrent(
+                "partial-a",
+                "Partial A",
+                state="stoppedDL",
+                progress=0.41,
+                amount_left=3 * 1024**3,
+                num_seeds=0,
+                availability=0.18,
+            ),
+            make_torrent(
+                "partial-b",
+                "Partial B",
+                state="stoppedDL",
+                progress=0.18,
+                amount_left=6 * 1024**3,
+                num_seeds=0,
+                availability=0.09,
+            ),
+        ]
+        stall = {torrent["hash"]: {"stalledSeconds": 0, "probeStalled": False, "longStalled": False} for torrent in candidates}
+        metrics = orch.collect_workload_metrics(candidates, stall)
+        self.assertEqual(metrics["healthyCandidateCount"], 0)
+        self.assertEqual(metrics["partialResumeCount"], 2)
+
+    def test_cold_dead_backlog_candidate_is_ignored_only_after_grace_period(self) -> None:
+        old_dead = make_torrent(
+            "old-dead",
+            "Old Dead",
+            state="stoppedDL",
+            progress=0.0,
+            has_metadata=False,
+            added_on=orch.now_ts() - (orch.CONFIG.cold_dead_backlog_grace_seconds + 600),
+            last_activity=orch.now_ts() - (orch.CONFIG.cold_dead_backlog_grace_seconds + 600),
+        )
+        recent_dead = make_torrent(
+            "recent-dead",
+            "Recent Dead",
+            state="stoppedDL",
+            progress=0.0,
+            has_metadata=False,
+            added_on=orch.now_ts() - 300,
+            last_activity=orch.now_ts() - 300,
+        )
+        stall = {
+            old_dead["hash"]: {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            recent_dead["hash"]: {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        self.assertTrue(orch.is_cold_dead_backlog_candidate(old_dead, stall[old_dead["hash"]]))
+        self.assertFalse(orch.is_cold_dead_backlog_candidate(recent_dead, stall[recent_dead["hash"]]))
+
+    def test_partial_or_near_complete_items_are_not_treated_as_cold_dead_backlog(self) -> None:
+        partial = make_torrent(
+            "partial",
+            "Partial Resume",
+            state="stoppedDL",
+            progress=0.35,
+            availability=0.35,
+            added_on=orch.now_ts() - (orch.CONFIG.cold_dead_backlog_grace_seconds + 600),
+            last_activity=orch.now_ts() - (orch.CONFIG.cold_dead_backlog_grace_seconds + 600),
+        )
+        near_complete = make_torrent(
+            "near-complete",
+            "Near Complete",
+            state="stalledDL",
+            progress=0.96,
+            availability=0.96,
+            added_on=orch.now_ts() - (orch.CONFIG.cold_dead_backlog_grace_seconds + 600),
+            last_activity=orch.now_ts() - (orch.CONFIG.cold_dead_backlog_grace_seconds + 600),
+        )
+        stall = {
+            partial["hash"]: {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            near_complete["hash"]: {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        self.assertFalse(orch.is_cold_dead_backlog_candidate(partial, stall[partial["hash"]]))
+        self.assertFalse(orch.is_cold_dead_backlog_candidate(near_complete, stall[near_complete["hash"]]))
+
+    def test_expansive_mode_resumes_partial_backlog_with_positive_availability(self) -> None:
+        candidates = [
+            make_torrent(
+                "active",
+                "Active",
+                state="downloading",
+                progress=0.96,
+                amount_left=250 * 1024**2,
+                dlspeed=700_000,
+                num_seeds=3,
+                availability=3.5,
+            ),
+            make_torrent(
+                "partial-a",
+                "Partial A",
+                state="stoppedDL",
+                progress=0.91,
+                amount_left=2 * 1024**3,
+                availability=0.91,
+            ),
+            make_torrent(
+                "partial-b",
+                "Partial B",
+                state="stoppedDL",
+                progress=0.62,
+                amount_left=900 * 1024**2,
+                availability=0.61,
+            ),
+            make_torrent(
+                "partial-c",
+                "Partial C",
+                state="stoppedDL",
+                progress=0.36,
+                amount_left=7 * 1024**3,
+                availability=0.35,
+            ),
+        ]
+        stall = {torrent["hash"]: {"stalledSeconds": 0, "probeStalled": False, "longStalled": False} for torrent in candidates}
+        metrics = orch.collect_workload_metrics(candidates, stall)
+        desired = orch.target_active_downloads("expansive", candidates, int(500 * 1024**3), stall, metrics)
+        allowed = orch.choose_allowed(FakeStore(), candidates, "expansive", int(500 * 1024**3), stall, desired)
+        self.assertGreaterEqual(desired, 4)
+        self.assertEqual([torrent["hash"] for torrent in allowed[:4]], ["active", "partial-a", "partial-b", "partial-c"])
 
     def test_single_torrent_speed_bias(self) -> None:
         metrics = {
@@ -581,6 +734,47 @@ class OrchestratorScenarioTests(unittest.TestCase):
         total_remaining = sum(t["amount_left"] for t in allowed[1:])
         self.assertLessEqual(total_remaining, int((30 - orch.CONFIG.reserved_free_gb) * 1024**3))
 
+    def test_choose_allowed_skips_missing_files_after_first_pick(self) -> None:
+        candidates = [
+            make_torrent(
+                "healthy",
+                "Healthy",
+                state="downloading",
+                dlspeed=3 * 1024**2,
+                progress=0.6,
+                amount_left=2 * 1024**3,
+                num_seeds=4,
+                availability=2.0,
+                category="radarr",
+            ),
+            make_torrent(
+                "missing",
+                "Missing Files",
+                state="missingFiles",
+                progress=0.4,
+                amount_left=4 * 1024**3,
+                num_seeds=0,
+                availability=0.0,
+                category="radarr",
+            ),
+            make_torrent(
+                "viable",
+                "Viable",
+                state="stoppedDL",
+                progress=0.2,
+                amount_left=3 * 1024**3,
+                num_seeds=2,
+                availability=1.4,
+                category="radarr",
+            ),
+        ]
+        stall = {
+            torrent["hash"]: {"stalledSeconds": 0, "probeStalled": False, "longStalled": False}
+            for torrent in candidates
+        }
+        allowed = orch.choose_allowed(FakeStore(), candidates, "expansive", int(30 * 1024**3), stall, 2)
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["healthy", "viable"])
+
     def test_constrained_selection_prefers_viable_seeded_swarm_over_zero_seed_probe(self) -> None:
         candidates = [
             make_torrent(
@@ -657,6 +851,219 @@ class OrchestratorScenarioTests(unittest.TestCase):
         }
         allowed = orch.choose_allowed(FakeStore(), [stalled_active], "constrained", int(30 * 1024**3), stall, 1)
         self.assertEqual([torrent["hash"] for torrent in allowed], ["stalled"])
+
+    def test_expansive_choose_allowed_bootstraps_multiple_candidates_when_no_active_downloads(self) -> None:
+        completion = make_torrent(
+            "completion",
+            "Almost Done",
+            state="stalledDL",
+            progress=0.996,
+            amount_left=32 * 1024**2,
+            num_seeds=1,
+            availability=1.9,
+            has_metadata=True,
+            added_on=100,
+        )
+        partial = make_torrent(
+            "partial",
+            "Partial Resume",
+            state="stoppedDL",
+            progress=0.54,
+            amount_left=int(1.4 * 1024**3),
+            num_seeds=0,
+            availability=0.54,
+            has_metadata=True,
+            added_on=200,
+        )
+        meta_a = make_torrent(
+            "meta-a",
+            "Metadata Bootstrap A",
+            state="stoppedDL",
+            progress=0.0,
+            amount_left=0,
+            has_metadata=False,
+            added_on=300,
+        )
+        meta_a["trackers_count"] = 12
+        meta_b = make_torrent(
+            "meta-b",
+            "Metadata Bootstrap B",
+            state="stoppedDL",
+            progress=0.0,
+            amount_left=0,
+            has_metadata=False,
+            added_on=400,
+        )
+        meta_b["trackers_count"] = 10
+        stall = {
+            "completion": {"stalledSeconds": orch.CONFIG.probe_rotation_seconds + 30, "probeStalled": False, "longStalled": False},
+            "partial": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "meta-a": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "meta-b": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(
+            FakeStore(),
+            [completion, partial, meta_a, meta_b],
+            "expansive",
+            int(500 * 1024**3),
+            stall,
+            4,
+        )
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["completion", "partial", "meta-a", "meta-b"])
+
+    def test_expansive_choose_allowed_backfills_when_only_one_downloader_is_moving(self) -> None:
+        moving = make_torrent(
+            "moving",
+            "Weak Mover",
+            state="downloading",
+            dlspeed=220 * 1024,
+            progress=0.31,
+            amount_left=int(1.8 * 1024**3),
+            num_seeds=1,
+            availability=1.2,
+            added_on=100,
+        )
+        completion = make_torrent(
+            "completion",
+            "Almost Done",
+            state="stalledDL",
+            progress=0.996,
+            amount_left=32 * 1024**2,
+            num_seeds=1,
+            availability=1.9,
+            has_metadata=True,
+            added_on=200,
+        )
+        meta_a = make_torrent(
+            "meta-a",
+            "Metadata Bootstrap A",
+            state="stoppedDL",
+            progress=0.0,
+            amount_left=0,
+            has_metadata=False,
+            added_on=300,
+        )
+        meta_a["trackers_count"] = 12
+        meta_b = make_torrent(
+            "meta-b",
+            "Metadata Bootstrap B",
+            state="stoppedDL",
+            progress=0.0,
+            amount_left=0,
+            has_metadata=False,
+            added_on=400,
+        )
+        meta_b["trackers_count"] = 10
+        stall = {
+            "moving": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "completion": {"stalledSeconds": orch.CONFIG.probe_rotation_seconds + 30, "probeStalled": False, "longStalled": False},
+            "meta-a": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "meta-b": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(
+            FakeStore(),
+            [moving, completion, meta_a, meta_b],
+            "expansive",
+            int(500 * 1024**3),
+            stall,
+            4,
+        )
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["moving", "completion", "meta-a", "meta-b"])
+
+    def test_expansive_choose_allowed_backfills_when_only_two_downloaders_are_moving(self) -> None:
+        moving_a = make_torrent(
+            "moving-a",
+            "Mover A",
+            state="downloading",
+            dlspeed=900 * 1024,
+            progress=0.44,
+            amount_left=int(6 * 1024**3),
+            num_seeds=3,
+            availability=2.4,
+            added_on=100,
+        )
+        moving_b = make_torrent(
+            "moving-b",
+            "Mover B",
+            state="downloading",
+            dlspeed=600 * 1024,
+            progress=0.27,
+            amount_left=int(8 * 1024**3),
+            num_seeds=2,
+            availability=1.9,
+            added_on=200,
+        )
+        completion = make_torrent(
+            "completion",
+            "Almost Done",
+            state="stalledDL",
+            progress=0.996,
+            amount_left=24 * 1024**2,
+            num_seeds=1,
+            availability=0.99,
+            has_metadata=True,
+            added_on=300,
+        )
+        partial = make_torrent(
+            "partial",
+            "Partial Resume",
+            state="stoppedDL",
+            progress=0.82,
+            amount_left=int(2 * 1024**3),
+            num_seeds=0,
+            availability=0.82,
+            has_metadata=True,
+            added_on=400,
+        )
+        meta_a = make_torrent(
+            "meta-a",
+            "Metadata Bootstrap A",
+            state="stoppedDL",
+            progress=0.0,
+            amount_left=0,
+            has_metadata=False,
+            added_on=500,
+        )
+        meta_a["trackers_count"] = 12
+        stall = {
+            "moving-a": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "moving-b": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "completion": {"stalledSeconds": orch.CONFIG.probe_rotation_seconds + 30, "probeStalled": False, "longStalled": False},
+            "partial": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+            "meta-a": {"stalledSeconds": 0, "probeStalled": False, "longStalled": False},
+        }
+        allowed = orch.choose_allowed(
+            FakeStore(),
+            [moving_a, moving_b, completion, partial, meta_a],
+            "expansive",
+            int(500 * 1024**3),
+            stall,
+            5,
+        )
+        self.assertEqual([torrent["hash"] for torrent in allowed], ["moving-a", "moving-b", "completion", "partial", "meta-a"])
+
+    def test_near_complete_stalled_download_is_reserved_until_long_stalled(self) -> None:
+        stalled = make_torrent(
+            "stalled",
+            "Nearly Finished",
+            state="stalledDL",
+            progress=0.996,
+            amount_left=32 * 1024**2,
+            num_seeds=0,
+            availability=0.99,
+        )
+        self.assertTrue(
+            orch.should_reserve_completion_priority_active(
+                stalled,
+                {"stalledSeconds": orch.CONFIG.probe_rotation_seconds + 30, "probeStalled": True, "longStalled": False},
+            )
+        )
+        self.assertFalse(
+            orch.should_reserve_completion_priority_active(
+                stalled,
+                {"stalledSeconds": orch.CONFIG.stall_failover_seconds + 30, "probeStalled": True, "longStalled": True},
+            )
+        )
 
     def test_choose_allowed_returns_empty_when_only_dead_zero_seed_probes_exist(self) -> None:
         dead_probe = make_torrent(
@@ -861,6 +1268,25 @@ class OrchestratorScenarioTests(unittest.TestCase):
         finally:
             object.__setattr__(orch.CONFIG, "min_torrent_action_interval_seconds", original_default)
             object.__setattr__(orch.CONFIG, "min_rotation_action_interval_seconds", original_rotation)
+
+    def test_update_stability_guard_bootstraps_immediately_when_no_active_downloads(self) -> None:
+        store = FakeStore()
+        store.runtime["stability"] = {
+            "lastTorrentActionAt": orch.now_ts() - 120,
+            "modeSignature": "expansive",
+            "selectionSignature": orch.stable_signature({"start": [], "stop": []}),
+            "selectionStableCycles": 1,
+        }
+        meta = orch.update_stability_guard(
+            store,
+            "expansive",
+            [],
+            ["bootstrap-hash"],
+            {},
+            rotation_urgent=True,
+            no_active_downloads=True,
+        )
+        self.assertTrue(meta["torrentControlReady"])
 
     def test_broken_download_recovery_does_not_fire_when_gate_off(self) -> None:
         original_allow_arr = orch.CONFIG.allow_arr_commands
@@ -1272,7 +1698,7 @@ class OrchestratorScenarioTests(unittest.TestCase):
                         "monitored": True,
                         "hasFile": False,
                         "isAvailable": True,
-                        "added": "2026-03-10T00:00:00Z",
+                        "added": "2026-03-20T00:00:00Z",
                         "lastSearchTime": "2026-03-20T00:00:00Z",
                     }
                 ]
@@ -1319,7 +1745,7 @@ class OrchestratorScenarioTests(unittest.TestCase):
                         "id": 6,
                         "title": "Goodbye & Good Riddance",
                         "monitored": True,
-                        "releaseDate": "2026-03-10T00:00:00Z",
+                        "releaseDate": "2026-03-20T00:00:00Z",
                         "lastSearchTime": "2026-03-20T00:00:00Z",
                         "statistics": {"trackFileCount": 0, "trackCount": 20},
                     }

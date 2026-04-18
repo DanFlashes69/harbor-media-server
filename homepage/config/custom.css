@@ -1,0 +1,205 @@
+body {
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.18), transparent 26%),
+    radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 22%),
+    linear-gradient(180deg, #07111b 0%, #0a1624 48%, #061018 100%);
+}
+
+#page_wrapper::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.15), transparent 40%),
+    repeating-linear-gradient(
+      135deg,
+      rgba(148, 163, 184, 0.03) 0,
+      rgba(148, 163, 184, 0.03) 1px,
+      transparent 1px,
+      transparent 18px
+    );
+  pointer-events: none;
+}
+
+#inner_wrapper .container {
+  max-width: 1760px;
+}
+
+#information-widgets,
+#bookmarks,
+#services {
+  position: relative;
+  z-index: 1;
+}
+
+#information-widgets {
+  margin-top: 0 !important;
+  margin-bottom: 0.05rem;
+  border: 1px solid rgba(148, 163, 184, 0.18) !important;
+  border-radius: 1.5rem;
+  padding: 0.65rem 0.95rem 0.7rem;
+  background: rgba(7, 18, 31, 0.72);
+  box-shadow: 0 28px 70px rgba(2, 8, 23, 0.36);
+  backdrop-filter: blur(18px);
+}
+
+#widgets-wrap,
+#information-widgets-right {
+  gap: 0.75rem;
+}
+
+.widget-container,
+#information-widgets .information-widget-form,
+#information-widgets .information-widget-resource {
+  border-radius: 1rem;
+}
+
+#information-widgets .widget-container,
+#information-widgets .information-widget-form,
+#information-widgets .information-widget-resource {
+  background: rgba(15, 23, 42, 0.34);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  padding: 0.55rem 0.75rem;
+}
+
+#information-widgets input,
+#information-widgets button {
+  border-radius: 0.9rem !important;
+}
+
+#bookmarks,
+#services {
+  margin-top: 0.7rem;
+}
+
+#bookmarks h2,
+#services h2 {
+  margin-bottom: 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(186, 230, 253, 0.82);
+}
+
+#bookmarks > div,
+#services > div {
+  margin-bottom: 0.65rem;
+}
+
+#bookmarks ul,
+#services ul {
+  border-radius: 1.5rem;
+}
+
+#services > div > ul {
+  display: grid !important;
+  grid-auto-rows: 1fr;
+  align-items: stretch !important;
+}
+
+#bookmarks li,
+#services li {
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  height: 100%;
+}
+
+#bookmarks li:hover,
+#services li:hover {
+  transform: translateY(-2px);
+}
+
+#bookmarks a,
+#services li > div,
+#services li > a {
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  border-radius: 1.3rem !important;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.78), rgba(9, 15, 25, 0.92));
+  box-shadow: 0 16px 35px rgba(2, 8, 23, 0.24);
+}
+
+#services li > div,
+#services li > a {
+  min-height: 7.05rem;
+  height: 7.05rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+#services li > div > div,
+#services li > a > div {
+  width: 100%;
+}
+
+#services li > div > div:last-child,
+#services li > a > div:last-child {
+  flex: 1;
+  min-height: 2.8rem;
+  display: flex;
+  align-items: end;
+}
+
+#services [class*="widget"] [class*="text-xs"],
+#services [class*="widget"] .text-xs {
+  font-size: 0.65rem !important;
+}
+
+#services [class*="widget"] {
+  min-height: 2.8rem;
+  width: 100%;
+}
+
+#services li:has(a[href*=":5055"]) > div,
+#services li:has(a[href*=":5055"]) > a {
+  min-height: 7.05rem;
+  height: 7.05rem;
+}
+
+#services li:has(a[href*=":5055"]) > div > div:last-child,
+#services li:has(a[href*=":5055"]) > a > div:last-child {
+  min-height: 2.8rem;
+}
+
+#services li:has(a[href*=":5055"]) [class*="widget"] {
+  min-height: 2.8rem;
+}
+
+#services [class*="widget"] [class*="h-5"] {
+  height: 1rem !important;
+}
+
+#services [class*="widget"] [class*="m-1"] {
+  margin: 0.1rem !important;
+}
+
+#services [class*="widget"] [class*="px-1"] {
+  padding-left: 0.35rem !important;
+  padding-right: 0.35rem !important;
+}
+
+#services svg {
+  transform: scale(0.92);
+}
+
+#bookmarks a:hover,
+#services li > div:hover,
+#services li > a:hover {
+  border-color: rgba(56, 189, 248, 0.32);
+  box-shadow: 0 20px 42px rgba(2, 8, 23, 0.38);
+}
+
+#bookmarks .opacity-50,
+#services .opacity-50 {
+  opacity: 0.8;
+}
+
+.site-monitor-status {
+  box-shadow: 0 0 0 4px rgba(2, 6, 23, 0.72), 0 0 15px currentColor;
+}
+
+#footer {
+  padding-top: 1rem;
+}

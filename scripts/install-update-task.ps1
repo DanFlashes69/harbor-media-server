@@ -1,13 +1,13 @@
 $ErrorActionPreference = 'Stop'
 
 $TaskName = 'Harbor Media Stack Safe Update'
-$RunUpdateCmd = Join-Path $PSScriptRoot 'run-safe-update.cmd'
+$UpdateScript = Join-Path $PSScriptRoot 'safe-update-media-stack.ps1'
 
-if (-not (Test-Path -LiteralPath $RunUpdateCmd)) {
-    throw "Update runner not found: $RunUpdateCmd"
+if (-not (Test-Path -LiteralPath $UpdateScript)) {
+    throw "Update script not found: $UpdateScript"
 }
 
-$Action = New-ScheduledTaskAction -Execute $RunUpdateCmd
+$Action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$UpdateScript`""
 $Triggers = @(
     (New-ScheduledTaskTrigger -Daily -At 4:30AM)
 )

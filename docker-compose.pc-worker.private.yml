@@ -1,0 +1,24 @@
+services:
+  tdarr-node:
+    image: ghcr.io/haveagitgat/tdarr_node:latest
+    container_name: tdarr-node
+    runtime: nvidia
+    gpus: all
+    environment:
+      - TZ=${TIMEZONE}
+      - serverURL=http://${TDARR_SERVER_HOST}:8266
+      - nodeName=${TDARR_NODE_NAME:-PcGpuOverflowNode}
+      - inContainer=true
+      - ffmpegVersion=7
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+      - LD_LIBRARY_PATH=/usr/lib/wsl/lib
+    volumes:
+      - ${DOCKER_ROOT}/tdarr/configs:/app/configs
+      - ${DOCKER_ROOT}/tdarr/logs:/app/logs
+      - ${TDARR_MEDIA_ROOT}/movies:/media/movies
+      - ${TDARR_MEDIA_ROOT}/tv:/media/tv
+      - ${TDARR_MEDIA_ROOT}/music:/media/music
+      - ${DOCKER_ROOT}/tdarr/transcode_cache:/temp
+      - /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro
+    restart: unless-stopped
